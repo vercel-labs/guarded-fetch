@@ -129,6 +129,27 @@ describe(safeFetch, () => {
     });
   });
 
+  // A redirect whose Location hides a private target behind userinfo
+  // (`https://public@127.0.0.1/...`) must be caught before the next hop fires —
+  // the redirect is validated on the real host, and the internal request is
+  // never made.
+  it('rejects a redirect to a private host obscured by userinfo', async () => {
+    const fetch = mockFetch().mockResolvedValueOnce(
+      new Response(null, {
+        status: 302,
+        headers: {
+          location: 'https://example.com@127.0.0.1/latest/meta-data/',
+        },
+      }),
+    );
+    await expect(
+      safeFetch('https://example.com', { fetch }),
+    ).rejects.toMatchObject({
+      code: SafeFetchErrorCode.REDIRECT_TO_UNSAFE_HOST,
+    });
+    expect(fetch).toHaveBeenCalledTimes(1); // second hop never issued
+  });
+
   it('rejects a redirect to a non-allowlisted protocol', async () => {
     const fetch = mockFetch().mockResolvedValueOnce(
       new Response(null, {

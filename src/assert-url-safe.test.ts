@@ -184,6 +184,72 @@ describe(assertUrlIsSafeToFetch, () => {
   });
 });
 
+// The common thread across these: naive string checks (startsWith, prefix,
+// literal-IP blocklists) are bypassable; safe-fetch validates the
+// WHATWG-parsed hostname instead, which these lock in.
+describe('assertUrlIsSafeToFetch — SSRF bypass edge cases', () => {
+  // Userinfo authority confusion. A `startsWith`-style check reading the raw
+  // string sees the allowlisted prefix, but the real request host is what
+  // follows the `@`.
+  it('validates the host after userinfo, not the userinfo itself (allowlist)', async () => {
+    await expect(
+      assertUrlIsSafeToFetch('https://allowed.example@attacker.com/path', {
+        allowedHosts: ['allowed.example'],
+      }),
+    ).rejects.toMatchObject({
+      code: SafeFetchErrorCode.HOST_NOT_ALLOWED,
+      hostname: 'attacker.com',
+    });
+    expect(mockLookup).not.toHaveBeenCalled();
+  });
+
+  it('runs the SSRF check on the real host when credentials are embedded', async () => {
+    await expect(
+      assertUrlIsSafeToFetch('https://user:pass@10.0.0.1/'),
+    ).rejects.toMatchObject({
+      code: SafeFetchErrorCode.HOSTNAME_UNSAFE,
+      hostname: '10.0.0.1',
+    });
+    expect(blockedEvents).toHaveBeenCalledWith({
+      reason: SafeFetchErrorCode.HOSTNAME_UNSAFE,
+      domain: '10.0.0.1',
+      subReason: HostnameUnsafeSubReason.IP_LITERAL_UNSAFE,
+    });
+    expect(mockLookup).not.toHaveBeenCalled();
+  });
+
+  // A `startsWith`-style allowlist check without a trailing-dot boundary lets
+  // `allowed.example.evil.com` pass. The allowlist matcher is right-anchored
+  // on a dot boundary, so it must not.
+  it('rejects a look-alike domain that only suffix-matches the allowlist', async () => {
+    await expect(
+      assertUrlIsSafeToFetch('https://allowed.example.evil.com/', {
+        allowedHosts: ['allowed.example'],
+      }),
+    ).rejects.toMatchObject({
+      code: SafeFetchErrorCode.HOST_NOT_ALLOWED,
+      hostname: 'allowed.example.evil.com',
+    });
+    expect(mockLookup).not.toHaveBeenCalled();
+  });
+
+  // Loopback written in alternate IPv4 encodings: decimal, hex, octal, and
+  // short-form literals all normalize to 127.0.0.1 and must be blocked as IP
+  // literals without ever hitting DNS.
+  it.each([
+    ['decimal', 'http://2130706433/'],
+    ['hex', 'http://0x7f000001/'],
+    ['octal', 'http://0177.0.0.1/'],
+    ['short-form', 'http://127.1/'],
+  ])('blocks loopback written in %s form', async (_label, url) => {
+    await expect(assertUrlIsSafeToFetch(url)).rejects.toMatchObject({
+      code: SafeFetchErrorCode.HOSTNAME_UNSAFE,
+      hostname: '127.0.0.1',
+    });
+    expect(mockLookup).not.toHaveBeenCalled();
+  });
+});
+
 describe(isHostInAllowlist, () => {
   it('returns true for exact match (case-insensitive)', () => {
     expect(isHostInAllowlist('allowed.example', ['Allowed.example'])).toBe(
