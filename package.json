@@ -1,6 +1,6 @@
 {
   "name": "safe-fetch",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "description": "SSRF-safe HTTP(S) fetch utilities backed by undici: DNS-rebinding protection, redirect validation, header sanitization, and bounded body reads",
   "author": "Vercel",
   "license": "MIT",

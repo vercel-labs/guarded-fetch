@@ -15,6 +15,12 @@ permissions:
 
 jobs:
   ci:
+    # Only run for same-repo (internal) PRs. Fork/external PRs are skipped for
+    # now — their head repo differs from this repo, so this guard is false.
+    # (We use `pull_request`, never `pull_request_target`, so forks could only
+    # ever get a read-only token with no secrets regardless; this stops the run
+    # entirely.)
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0 # v6.0.3

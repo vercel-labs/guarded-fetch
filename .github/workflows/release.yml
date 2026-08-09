@@ -1,11 +1,14 @@
 name: Release
 
-# Validates and publishes to npm on every push to main.
-# Uses npm Trusted Publishing (OIDC) -- no NPM_TOKEN secret needed.
-# Requires the package to be configured as a Trusted Publisher on npmjs.com
-# linked to this repo and workflow.
-# If the version in package.json is already on the registry, npm publish
-# will fail, signalling that a version bump is needed.
+# Validates on every push to main. Publishing is DISABLED for now (see the
+# commented-out `publish` job below) until the npm package name is finalized
+# and configured as a Trusted Publisher on npmjs.com. Re-enable by uncommenting
+# that job.
+#
+# When re-enabled: uses npm Trusted Publishing (OIDC) -- no NPM_TOKEN secret
+# needed. The publish job explicitly compares the package.json `version` against
+# what is on npm and only publishes when they differ, so an unbumped push to
+# main is a clean no-op. Bump `version` in package.json to cut a release.
 
 on:
   push:
@@ -13,9 +16,10 @@ on:
 
 concurrency: ${{ github.workflow }}-${{ github.ref }}
 
-# id-token: write is NOT granted at the workflow level. It is scoped only to the
-# `publish` job below, so the long validation step (which runs many actions and
-# scripts) never holds the OIDC publishing capability.
+# id-token: write is NOT granted at the workflow level. When the `publish` job
+# is re-enabled it must scope id-token to itself, so the long validation step
+# (which runs many actions and scripts) never holds the OIDC publishing
+# capability.
 permissions:
   contents: read
 
@@ -59,30 +63,63 @@ jobs:
       - name: Unit tests
         run: pnpm test
 
-  # Minimal publish job. Only this job holds id-token: write, and it runs only
-  # after validate succeeds. npm publish triggers `prepublishOnly` (pnpm build),
-  # so the package is rebuilt here from a clean checkout before publishing.
-  publish:
-    needs: validate
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
-
-    steps:
-      - uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0 # v6.0.3
-        with:
-          fetch-depth: 0
-
-      - uses: pnpm/action-setup@fdbc4fdcf7d143a5d0a39e9a02e103b13e309024 # v6.0.4
-
-      - uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
-        with:
-          node-version: "24"
-          cache: "pnpm"
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Publish to npm
-        run: npm publish
+  # Publishing is DISABLED until the npm package name is finalized and
+  # registered as a Trusted Publisher on npmjs.com. To re-enable, uncomment this
+  # job. Only this job holds id-token: write, and it runs only after validate
+  # succeeds.
+  #
+  # The release is gated on an explicit version-delta check: the `version` in
+  # package.json is compared against what is currently published on npm, and the
+  # publish steps run only when they differ. Cutting a release is therefore a
+  # deliberate act — bump `version` in package.json and merge to main; an
+  # unbumped push is a clean no-op, not a failed publish. Read the package name
+  # from package.json so this keeps working after the placeholder name is set.
+  #
+  # publish:
+  #   needs: validate
+  #   runs-on: ubuntu-latest
+  #   permissions:
+  #     contents: read
+  #     id-token: write # required for npm OIDC trusted publishing + provenance
+  #
+  #   steps:
+  #     - uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0 # v6.0.3
+  #       with:
+  #         fetch-depth: 0
+  #
+  #     # Compare local package.json version against the published one. Skip when
+  #     # equal so re-running on a no-op commit neither errors nor republishes.
+  #     - name: Resolve version delta
+  #       id: ver
+  #       run: |
+  #         set -eo pipefail
+  #         NAME=$(node -p "require('./package.json').name")
+  #         LOCAL=$(node -p "require('./package.json').version")
+  #         PUBLISHED=$(npm view "$NAME" version 2>/dev/null || true)
+  #         if [ "$LOCAL" != "$PUBLISHED" ]; then
+  #           echo "publish=true" >> "$GITHUB_OUTPUT"
+  #           echo "::notice::Will publish $NAME@$LOCAL (currently on npm: ${PUBLISHED:-<none>})"
+  #         else
+  #           echo "publish=false" >> "$GITHUB_OUTPUT"
+  #           echo "::notice::$NAME@$LOCAL already on npm — skipping publish"
+  #         fi
+  #
+  #     # Everything below runs only when there is a new version to ship.
+  #     - if: steps.ver.outputs.publish == 'true'
+  #       uses: pnpm/action-setup@fdbc4fdcf7d143a5d0a39e9a02e103b13e309024 # v6.0.4
+  #
+  #     - if: steps.ver.outputs.publish == 'true'
+  #       uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
+  #       with:
+  #         node-version: "24"
+  #         registry-url: "https://registry.npmjs.org"
+  #         cache: "pnpm"
+  #
+  #     - if: steps.ver.outputs.publish == 'true'
+  #       run: pnpm install --frozen-lockfile
+  #
+  #     # npm publish runs prepublishOnly (pnpm build), rebuilding from a clean
+  #     # checkout. --provenance attaches a signed attestation linking the tarball
+  #     # to this workflow run + commit (requires a PUBLIC repo and id-token:write).
+  #     - if: steps.ver.outputs.publish == 'true'
+  #       run: npm publish --provenance
