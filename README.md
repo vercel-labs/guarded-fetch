@@ -51,15 +51,15 @@ try {
 
 A bare `safeFetch(url)` call, with no options, already does all of this:
 
-| Protection | Default behavior |
-| --- | --- |
-| Protocol allowlist | Only `http:` and `https:` URLs are accepted. |
-| SSRF DNS check | The hostname is DNS-resolved before connecting; private, loopback, link-local, CGNAT, and cloud-metadata addresses are rejected. `localhost` and `*.local` are rejected by name. |
-| Connect-time IP pinning | The resolved IP is re-validated *inside* the socket connect, so a DNS server can't swap in a private IP between the check and the connection (DNS rebinding). |
-| Header sanitization | `Host`, `Cookie`, `X-Forwarded-*`, cloud-metadata headers, and other dangerous headers are silently stripped from your request. |
-| Safe redirects | Redirects are followed manually (max 5 hops) and every hop re-runs all of the checks above. |
-| Credential stripping | `Authorization` and `Cookie` are dropped when a redirect crosses origins, so tokens never leak to a different host. |
-| Timeout | The whole request chain (including redirects) is capped at 10 seconds. |
+| Protection              | Default behavior                                                                                                                                                                 |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Protocol allowlist      | Only `http:` and `https:` URLs are accepted.                                                                                                                                     |
+| SSRF DNS check          | The hostname is DNS-resolved before connecting; private, loopback, link-local, CGNAT, and cloud-metadata addresses are rejected. `localhost` and `*.local` are rejected by name. |
+| Connect-time IP pinning | The resolved IP is re-validated _inside_ the socket connect, so a DNS server can't swap in a private IP between the check and the connection (DNS rebinding).                    |
+| Header sanitization     | `Host`, `Cookie`, `X-Forwarded-*`, cloud-metadata headers, and other dangerous headers are silently stripped from your request.                                                  |
+| Safe redirects          | Redirects are followed manually (max 5 hops) and every hop re-runs all of the checks above.                                                                                      |
+| Credential stripping    | `Authorization` and `Cookie` are dropped when a redirect crosses origins, so tokens never leak to a different host.                                                              |
+| Timeout                 | The whole request chain (including redirects) is capped at 10 seconds.                                                                                                           |
 
 Two things are **not** on by default:
 
@@ -134,7 +134,7 @@ ending up empty; to disable allowlisting, omit the option entirely.
 
 DNS is fail-closed. A transient resolver error or an empty DNS result is
 indistinguishable from an unsafe host, so it blocks rather than passing.
-Also, if *any* A/AAAA record for the host is private — even alongside
+Also, if _any_ A/AAAA record for the host is private — even alongside
 public ones (split-horizon DNS) — the whole host is rejected. Retrying is
 reasonable for transient cases; use `isPermanentSafeFetchError(err)` to
 tell retryable failures from permanent ones.
@@ -172,23 +172,23 @@ usual, except `redirect` and `signal`, which are managed internally
 (`signal` is accepted as a safe-fetch option and merged with the internal
 timeout).
 
-| Option | Type | Default | What it does |
-| --- | --- | --- | --- |
-| `timeoutMs` | `number` | `10_000` | Deadline in ms for the entire chain: connection, redirects, and (in the JSON/text wrappers) the body read. |
-| `followRedirects` | `boolean` | `true` | Follow redirects, re-validating every hop. When `false`, the 3xx response is returned as-is. |
-| `maxRedirects` | `number` | `5` | Redirect hop cap. Exceeding it throws `too_many_redirects`. |
-| `httpsOnly` | `boolean` | `false` | Restrict to `https:` URLs (`http:` and `https:` are otherwise both allowed). |
-| `allowedHosts` | `string[]` | *(none)* | Hostname allowlist — exact match or subdomain (`api.example.com` matches `example.com`). Omit to allow any public host. **Empty array = deny all.** |
-| `skipSsrfCheckForAllowedHosts` | `boolean` | `false` | Skip the DNS/SSRF check for hosts that matched `allowedHosts`. Only safe for hosts you fully control. |
-| `sanitizeHeaders` | `boolean` | `true` | Strip [dangerous request headers](#headers-that-are-stripped) before sending. Set `false` to send headers verbatim (dangerous with user input). |
-| `allowedCookie` | `string` | *(none)* | Explicitly send a `Cookie` header (which sanitization otherwise strips). Dropped on cross-origin redirects, like `Authorization`. |
-| `opaqueErrors` | `boolean` | `false` | Replace every error message with one generic string so failures are indistinguishable to attackers. Error `code` is preserved. |
-| `onUrlBlocked` | `function` | *(none)* | Per-call block-event handler; overrides the module-level `setUrlBlockedHandler` for this call. |
-| `signal` | `AbortSignal` | *(none)* | External abort signal, combined with the internal timeout. |
-| `fetch` | `fetch` impl | `undici.fetch` | Injectable fetch for tests. Must be undici-compatible. |
-| `dispatcher` | `Dispatcher \| null` | shared safe dispatcher | undici dispatcher for the request. `null` disables connect-time IP pinning — dangerous; only for when a trusted proxy already controls the connection target. |
-| `maxResponseBytes` | `number` | `10 * 1024 * 1024` | *(wrappers only)* Max body size; exceeding it throws `response_too_large`. |
-| `throwOnHttpError` | `boolean` | `false` | *(wrappers only)* Throw on non-2xx responses instead of returning the body. |
+| Option                         | Type                 | Default                | What it does                                                                                                                                                  |
+| ------------------------------ | -------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `timeoutMs`                    | `number`             | `10_000`               | Deadline in ms for the entire chain: connection, redirects, and (in the JSON/text wrappers) the body read.                                                    |
+| `followRedirects`              | `boolean`            | `true`                 | Follow redirects, re-validating every hop. When `false`, the 3xx response is returned as-is.                                                                  |
+| `maxRedirects`                 | `number`             | `5`                    | Redirect hop cap. Exceeding it throws `too_many_redirects`.                                                                                                   |
+| `httpsOnly`                    | `boolean`            | `false`                | Restrict to `https:` URLs (`http:` and `https:` are otherwise both allowed).                                                                                  |
+| `allowedHosts`                 | `string[]`           | _(none)_               | Hostname allowlist — exact match or subdomain (`api.example.com` matches `example.com`). Omit to allow any public host. **Empty array = deny all.**           |
+| `skipSsrfCheckForAllowedHosts` | `boolean`            | `false`                | Skip the DNS/SSRF check for hosts that matched `allowedHosts`. Only safe for hosts you fully control.                                                         |
+| `sanitizeHeaders`              | `boolean`            | `true`                 | Strip [dangerous request headers](#headers-that-are-stripped) before sending. Set `false` to send headers verbatim (dangerous with user input).               |
+| `allowedCookie`                | `string`             | _(none)_               | Explicitly send a `Cookie` header (which sanitization otherwise strips). Dropped on cross-origin redirects, like `Authorization`.                             |
+| `opaqueErrors`                 | `boolean`            | `false`                | Replace every error message with one generic string so failures are indistinguishable to attackers. Error `code` is preserved.                                |
+| `onUrlBlocked`                 | `function`           | _(none)_               | Per-call block-event handler; overrides the module-level `setUrlBlockedHandler` for this call.                                                                |
+| `signal`                       | `AbortSignal`        | _(none)_               | External abort signal, combined with the internal timeout.                                                                                                    |
+| `fetch`                        | `fetch` impl         | `undici.fetch`         | Injectable fetch for tests. Must be undici-compatible.                                                                                                        |
+| `dispatcher`                   | `Dispatcher \| null` | shared safe dispatcher | undici dispatcher for the request. `null` disables connect-time IP pinning — dangerous; only for when a trusted proxy already controls the connection target. |
+| `maxResponseBytes`             | `number`             | `10 * 1024 * 1024`     | _(wrappers only)_ Max body size; exceeding it throws `response_too_large`.                                                                                    |
+| `throwOnHttpError`             | `boolean`            | `false`                | _(wrappers only)_ Throw on non-2xx responses instead of returning the body.                                                                                   |
 
 Always on, not configurable:
 
@@ -202,22 +202,22 @@ Always on, not configurable:
 Every outbound attempt — the original URL and every redirect hop — is
 protected against:
 
-| Attack | How it's stopped |
-| --- | --- |
-| SSRF to private / loopback / link-local IPs, incl. AWS/GCP metadata (`169.254.169.254`) | Hostname is DNS-resolved and every record classified before connecting. |
-| SSRF via non-HTTP schemes (`file:`, `ftp:`, `gopher:`, ...) | Protocol allowlist: `http:`/`https:` only. |
-| DNS rebinding (TTL=0 flip between check and connect) | IP re-validated inside the socket connect via a pinned undici lookup. |
-| Multi-record DNS races (one public + one private record) | Rejected if *any* resolved A/AAAA record is unsafe. |
-| Private IPv4 hidden in IPv6 literals (`::ffff:`, 6to4 `2002::/16`, NAT64 `64:ff9b::/96`) | Embedded IPv4 is decoded and classified with the same rules as native IPv4. |
-| Redirect to an internal host after an initial safe response | Manual redirect following; every hop re-runs all checks. |
-| Infinite / abusive redirect chains | Hop cap (`maxRedirects`, default 5). |
-| Cloud-credential theft via metadata headers (`Metadata-Flavor`, `X-aws-ec2-metadata-token`) | Header stripped. |
-| Origin-IP spoofing (`X-Forwarded-*`, `Forwarded`, `Via`, `X-Real-IP`) | Header stripped. |
-| Virtual-host routing to internal backends via a supplied `Host` header | Header stripped. |
-| Session leakage via `Cookie` to a user-controlled destination | Header stripped (opt back in with `allowedCookie`). |
-| Auth-token leak on cross-origin redirect | `Authorization` and `Cookie` dropped when the redirect changes origin. |
-| Memory exhaustion from huge responses; slow-loris bodies | `maxResponseBytes` + whole-chain `timeoutMs` (use the JSON/text wrappers). |
-| Internal-network mapping via distinguishable error messages | `opaqueErrors: true` normalizes every failure message. |
+| Attack                                                                                      | How it's stopped                                                            |
+| ------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| SSRF to private / loopback / link-local IPs, incl. AWS/GCP metadata (`169.254.169.254`)     | Hostname is DNS-resolved and every record classified before connecting.     |
+| SSRF via non-HTTP schemes (`file:`, `ftp:`, `gopher:`, ...)                                 | Protocol allowlist: `http:`/`https:` only.                                  |
+| DNS rebinding (TTL=0 flip between check and connect)                                        | IP re-validated inside the socket connect via a pinned undici lookup.       |
+| Multi-record DNS races (one public + one private record)                                    | Rejected if _any_ resolved A/AAAA record is unsafe.                         |
+| Private IPv4 hidden in IPv6 literals (`::ffff:`, 6to4 `2002::/16`, NAT64 `64:ff9b::/96`)    | Embedded IPv4 is decoded and classified with the same rules as native IPv4. |
+| Redirect to an internal host after an initial safe response                                 | Manual redirect following; every hop re-runs all checks.                    |
+| Infinite / abusive redirect chains                                                          | Hop cap (`maxRedirects`, default 5).                                        |
+| Cloud-credential theft via metadata headers (`Metadata-Flavor`, `X-aws-ec2-metadata-token`) | Header stripped.                                                            |
+| Origin-IP spoofing (`X-Forwarded-*`, `Forwarded`, `Via`, `X-Real-IP`)                       | Header stripped.                                                            |
+| Virtual-host routing to internal backends via a supplied `Host` header                      | Header stripped.                                                            |
+| Session leakage via `Cookie` to a user-controlled destination                               | Header stripped (opt back in with `allowedCookie`).                         |
+| Auth-token leak on cross-origin redirect                                                    | `Authorization` and `Cookie` dropped when the redirect changes origin.      |
+| Memory exhaustion from huge responses; slow-loris bodies                                    | `maxResponseBytes` + whole-chain `timeoutMs` (use the JSON/text wrappers).  |
+| Internal-network mapping via distinguishable error messages                                 | `opaqueErrors: true` normalizes every failure message.                      |
 
 ### Blocked network destinations
 
@@ -317,47 +317,47 @@ const data = await readBodyAsJson(response, {
 
 ## API surface
 
-| Export | Purpose |
-| --- | --- |
-| `safeFetch(url, opts?)` | SSRF-safe `fetch` — returns a `Response`. |
-| `safeFetchJson<T>(url, opts?)` | Fetch + bounded JSON parse. |
-| `safeFetchText(url, opts?)` | Fetch + bounded UTF-8 read. |
-| `assertUrlIsSafeToFetch(url, opts?)` | Pre-flight validator — no HTTP request, but does resolve DNS. |
-| `sanitizeRequestHeaders(headers)` | Strip SSRF/proxy/cookie headers → `Headers`. |
-| `sanitizeHeaderRecord(headers)` | Same, but returns a `Record<string, string>`. |
-| `readBodyAsJson(res, opts?)` | Size-bounded JSON reader for an existing `Response`. |
-| `readBodyAsText(res, opts?)` | Size-bounded text reader for an existing `Response`. |
-| `readBodyAsBytes(res, opts?)` | Size-bounded raw-bytes reader for an existing `Response`. |
-| `SafeFetchError`, `SafeFetchErrorCode` | Structured error type for every failure mode. |
-| `isSafeFetchError(v)` | Type guard resilient to duplicate module copies. |
-| `isPermanentSafeFetchError(v)` | True when the failure cannot succeed on retry. |
-| `BLOCKED_REQUEST_HEADERS` | The canonical header blocklist. |
-| `isHostInAllowlist(hostname, allowlist)` | Shared exact-or-subdomain allowlist matcher. |
-| `createSafeLookup(opts?)` | `dns.lookup`-compatible function that validates and pins IPs inline — embed in `https.Agent`, `net.connect`, or an undici Agent. |
-| `isSafeIpAddress(ip)` | Returns `true` for public IPv4/IPv6 addresses. |
-| `getSharedSafeDispatcher()` | Lazy process-wide undici `Agent` used by default. Connection-pooled. |
-| `createSafeDispatcher(opts?)` | Fresh undici `Agent` with IP pinning. Caller must `.close()`. |
-| `setUrlBlockedHandler(handler)` | Register a process-wide block-event handler. |
-| `URL_BLOCKED_LOG_MESSAGE` | Suggested constant log message for block events. |
-| `dangerousNakedFetch` | Re-export of undici's raw `fetch` — **no protections**. Only for URLs that can never be user-controlled; the name is meant to fail code review. |
+| Export                                   | Purpose                                                                                                                                         |
+| ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `safeFetch(url, opts?)`                  | SSRF-safe `fetch` — returns a `Response`.                                                                                                       |
+| `safeFetchJson<T>(url, opts?)`           | Fetch + bounded JSON parse.                                                                                                                     |
+| `safeFetchText(url, opts?)`              | Fetch + bounded UTF-8 read.                                                                                                                     |
+| `assertUrlIsSafeToFetch(url, opts?)`     | Pre-flight validator — no HTTP request, but does resolve DNS.                                                                                   |
+| `sanitizeRequestHeaders(headers)`        | Strip SSRF/proxy/cookie headers → `Headers`.                                                                                                    |
+| `sanitizeHeaderRecord(headers)`          | Same, but returns a `Record<string, string>`.                                                                                                   |
+| `readBodyAsJson(res, opts?)`             | Size-bounded JSON reader for an existing `Response`.                                                                                            |
+| `readBodyAsText(res, opts?)`             | Size-bounded text reader for an existing `Response`.                                                                                            |
+| `readBodyAsBytes(res, opts?)`            | Size-bounded raw-bytes reader for an existing `Response`.                                                                                       |
+| `SafeFetchError`, `SafeFetchErrorCode`   | Structured error type for every failure mode.                                                                                                   |
+| `isSafeFetchError(v)`                    | Type guard resilient to duplicate module copies.                                                                                                |
+| `isPermanentSafeFetchError(v)`           | True when the failure cannot succeed on retry.                                                                                                  |
+| `BLOCKED_REQUEST_HEADERS`                | The canonical header blocklist.                                                                                                                 |
+| `isHostInAllowlist(hostname, allowlist)` | Shared exact-or-subdomain allowlist matcher.                                                                                                    |
+| `createSafeLookup(opts?)`                | `dns.lookup`-compatible function that validates and pins IPs inline — embed in `https.Agent`, `net.connect`, or an undici Agent.                |
+| `isSafeIpAddress(ip)`                    | Returns `true` for public IPv4/IPv6 addresses.                                                                                                  |
+| `getSharedSafeDispatcher()`              | Lazy process-wide undici `Agent` used by default. Connection-pooled.                                                                            |
+| `createSafeDispatcher(opts?)`            | Fresh undici `Agent` with IP pinning. Caller must `.close()`.                                                                                   |
+| `setUrlBlockedHandler(handler)`          | Register a process-wide block-event handler.                                                                                                    |
+| `URL_BLOCKED_LOG_MESSAGE`                | Suggested constant log message for block events.                                                                                                |
+| `dangerousNakedFetch`                    | Re-export of undici's raw `fetch` — **no protections**. Only for URLs that can never be user-controlled; the name is meant to fail code review. |
 
 ## Error codes
 
 Every failure throws `SafeFetchError` with a stable string `code`
 (`err.code`, also available as the `SafeFetchErrorCode` enum):
 
-| Code | Meaning | Permanent? |
-| --- | --- | --- |
-| `invalid_url` | URL string failed to parse. | Yes |
-| `protocol_not_allowed` | Scheme outside the allowlist (`http:`/`https:`, or `https:` only with `httpsOnly`). | Yes |
-| `host_not_allowed` | Host not in `allowedHosts`. | Yes |
-| `hostname_unsafe` | Resolved to a private/loopback/link-local address — or DNS failed (fail-closed). | Usually |
-| `timeout` | Exceeded `timeoutMs`, or the external `signal` aborted. | No |
-| `too_many_redirects` | Redirect chain exceeded `maxRedirects`. | No |
-| `redirect_invalid` | Redirect `Location` missing or malformed. | No |
-| `redirect_to_unsafe_host` | A redirect target failed the SSRF/protocol/host checks. | No |
-| `response_too_large` | Body exceeded `maxResponseBytes`. | No |
-| `network_error` | DNS / connection / TLS / parse failure, or non-2xx with `throwOnHttpError`. | No |
+| Code                      | Meaning                                                                             | Permanent? |
+| ------------------------- | ----------------------------------------------------------------------------------- | ---------- |
+| `invalid_url`             | URL string failed to parse.                                                         | Yes        |
+| `protocol_not_allowed`    | Scheme outside the allowlist (`http:`/`https:`, or `https:` only with `httpsOnly`). | Yes        |
+| `host_not_allowed`        | Host not in `allowedHosts`.                                                         | Yes        |
+| `hostname_unsafe`         | Resolved to a private/loopback/link-local address — or DNS failed (fail-closed).    | Usually    |
+| `timeout`                 | Exceeded `timeoutMs`, or the external `signal` aborted.                             | No         |
+| `too_many_redirects`      | Redirect chain exceeded `maxRedirects`.                                             | No         |
+| `redirect_invalid`        | Redirect `Location` missing or malformed.                                           | No         |
+| `redirect_to_unsafe_host` | A redirect target failed the SSRF/protocol/host checks.                             | No         |
+| `response_too_large`      | Body exceeded `maxResponseBytes`.                                                   | No         |
+| `network_error`           | DNS / connection / TLS / parse failure, or non-2xx with `throwOnHttpError`.         | No         |
 
 Use `isPermanentSafeFetchError(err)` rather than hardcoding the
 retryability column.
@@ -377,9 +377,9 @@ Event shapes:
   hostname. For `hostname_unsafe`, `subReason` distinguishes the path —
   e.g. `dns_unsafe_address` (preflight) vs `connect_time_ip_rejected`
   (rebinding caught at socket connect).
-- **Unsafe redirect**: two events — first the redirect *target's* failure
+- **Unsafe redirect**: two events — first the redirect _target's_ failure
   with its own reason and the target's domain, then
-  `redirect_to_unsafe_host` with the *original* request hostname, so you
+  `redirect_to_unsafe_host` with the _original_ request hostname, so you
   can see which upstream returned the bad `Location`.
 - **Redirect abuse**: one event — `too_many_redirects` (original hostname)
   or `redirect_invalid` (hostname of the response with the bad `Location`).
