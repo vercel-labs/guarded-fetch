@@ -1,13 +1,11 @@
 # guarded-fetch
 
-<!-- TODO: final npm package name TBD — update the title, install command, and import paths before publishing. -->
+Drop-in `fetch` on the server for URLs you don't trust!
 
-Drop-in `fetch` for URLs you don't trust.
-
-If your server makes HTTP requests to URLs that users configure — webhooks,
-log drains, OIDC discovery, JWKS endpoints, image registries, connector
-callbacks — a plain `fetch(userUrl)` lets an attacker point your server at
-`http://169.254.169.254` and read your cloud credentials. `guardedFetch` is a
+Server Side Request Forgery is when user modified urls let an attacker point your server at
+`http://169.254.169.254` and read your cloud credentials (Common cases are urls like webhooks,
+log drains, connector
+callbacks, etc.). `guardedFetch` is a
 drop-in replacement that blocks that whole class of attack (SSRF), plus DNS
 rebinding, redirect tricks, header smuggling, and unbounded responses.
 
@@ -53,7 +51,7 @@ try {
 
 ## What's on by default
 
-A bare `guardedFetch(url)` call, with no options, already does all of this:
+`guarded-fetch` has a high security bar by default. `guardedFetch(url)` call with no additional options prevents:
 
 | Protection              | Default behavior                                                                                                                                                                 |
 | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -63,9 +61,9 @@ A bare `guardedFetch(url)` call, with no options, already does all of this:
 | Header sanitization     | `Host`, `Cookie`, `X-Forwarded-*`, cloud-metadata headers, and other dangerous headers are silently stripped from your request.                                                  |
 | Safe redirects          | Redirects are followed manually (max 5 hops) and every hop re-runs all of the checks above.                                                                                      |
 | Credential stripping    | `Authorization` and `Cookie` are dropped when a redirect crosses origins, so tokens never leak to a different host.                                                              |
-| Timeout                 | The whole request chain (including redirects) is capped at 10 seconds.                                                                                                           |
+| Timeout attacks         | The whole request chain (including redirects) is capped at 10 seconds.                                                                                                           |
 
-Two things are **not** on by default:
+Two things that always need configuration:
 
 - **Response size limits** apply only to `guardedFetchJson` / `guardedFetchText`
   (10 MB default). Bare `guardedFetch` returns the `Response` unread, so if you
@@ -74,107 +72,64 @@ Two things are **not** on by default:
 - **A host allowlist** — any publicly-resolving host is allowed unless you
   pass `allowedHosts`.
 
-## FAQ
+## Recipes
 
-### Why use this instead of plain `fetch` + an IP check?
+### User-configured webhook / log drain
 
-Because a naive "resolve the hostname, check the IP, then fetch" sequence
-has a race condition: an attacker-controlled DNS server can return a public
-IP for your check, then `169.254.169.254` for the actual connection (DNS
-rebinding). `guardedFetch` closes that window by validating the IP inside the
-same DNS resolution the socket connects with — see
-[DNS rebinding protection](#dns-rebinding-protection). It also handles the
-long tail a hand-rolled check misses: redirects to internal hosts, IPv6
-literals that embed private IPv4 addresses (`::ffff:10.0.0.1`, 6to4, NAT64),
-multi-record DNS responses where only one record is private, and header
-smuggling.
-
-### What if I want to log or count blocked requests?
-
-Register a block-event handler. Nothing is collected until you do, and
-handler errors never propagate into your request path:
+Strict timeout, opaque errors, capped redirects — for URLs where the
+attacker can both choose the destination and read your error messages:
 
 ```ts
-import { setUrlBlockedHandler, URL_BLOCKED_LOG_MESSAGE } from 'guarded-fetch';
+import { guardedFetch, isGuardedFetchError } from 'guarded-fetch';
 
-// Once at startup — works with any logger or metrics stack:
-setUrlBlockedHandler(({ reason, domain, subReason }) => {
-  logger.info({ reason, domain, subReason }, URL_BLOCKED_LOG_MESSAGE);
+try {
+  await guardedFetch(webhook.url, {
+    method: 'POST',
+    headers: webhook.headers, // sanitized automatically
+    body: JSON.stringify(event),
+    timeoutMs: 4_000,
+    maxRedirects: 3,
+    opaqueErrors: true,
+  });
+} catch (err) {
+  if (isGuardedFetchError(err)) {
+    // err.code is intact for internal logging;
+    // err.message is safe to show the user.
+    logger.info({ code: err.code, hostname: err.hostname }, 'delivery failed');
+  }
+  throw err;
+}
+```
+
+### Locked-down fetch to a known vendor
+
+```ts
+const data = await guardedFetchJson(vendorUrl, {
+  httpsOnly: true,
+  allowedHosts: ['api.vendor.com'],
+  maxResponseBytes: 1 * 1024 * 1024,
+  throwOnHttpError: true,
 });
 ```
 
-For per-request context (webhook ID, tenant ID), pass `onUrlBlocked` on the
-individual call instead — it overrides the module handler for that call.
-One caveat: blocks that happen at socket-connect time (the DNS-rebinding
-layer) only reach the module-level handler, so register both if you want
-full coverage.
-
-### Why is `localhost` blocked? I need it for local development.
-
-Blocking loopback is the point — in production, `http://127.0.0.1:8080`
-from user input is an attack. For local dev and tests, inject a fetch
-implementation or disable IP pinning explicitly rather than weakening the
-production configuration:
+### Size-bounded reads on an existing Response
 
 ```ts
-await guardedFetch(url, { fetch: mockFetch }); // tests
+import { guardedFetch, readBodyAsJson } from 'guarded-fetch';
+
+const response = await guardedFetch(url);
+const data = await readBodyAsJson(response, {
+  maxResponseBytes: 512 * 1024,
+});
 ```
-
-### Why did my request go through but the destination returned 401/404?
-
-Header sanitization is silent: blocked headers (see
-[the full list](#headers-that-are-stripped)) are dropped, not rejected. If
-the destination relied on `Host`, `Cookie`, or `X-Forwarded-For`, it will
-fail on its side with nothing pointing back at the stripped header. For
-cookies specifically there's a narrow opt-in: `allowedCookie`.
-
-### Why does `allowedHosts: []` block everything?
-
-An empty array means "allow these zero hosts" — deny-all — not "no
-allowlist configured". If you build the list dynamically, guard against it
-ending up empty; to disable allowlisting, omit the option entirely.
-
-### The URL is valid, the host is public — why `hostname_unsafe`?
-
-DNS is fail-closed. A transient resolver error or an empty DNS result is
-indistinguishable from an unsafe host, so it blocks rather than passing.
-Also, if _any_ A/AAAA record for the host is private — even alongside
-public ones (split-horizon DNS) — the whole host is rejected. Retrying is
-reasonable for transient cases; use `isPermanentGuardedFetchError(err)` to
-tell retryable failures from permanent ones.
-
-### Can I validate a URL without making a request?
-
-Yes — use `assertUrlIsSafeToFetch` at write time, e.g. when a user saves a
-webhook URL:
-
-```ts
-import { assertUrlIsSafeToFetch } from 'guarded-fetch';
-
-await assertUrlIsSafeToFetch(body.webhookUrl, { httpsOnly: true });
-// Throws GuardedFetchError if unsafe; safe to store otherwise.
-```
-
-Note the DNS answer can change between write time and request time — the
-request-time checks still run on every fetch.
-
-### What about error messages leaking information to attackers?
-
-If your error messages can reach the person who supplied the URL (e.g. a
-user-facing webhook delivery log), a probing attacker can use them to map
-your internal network — "timed out" vs "refused" vs "resolved to private
-address" each leak a bit. Set `opaqueErrors: true` to collapse every
-failure into one generic message. The `code` field on the error is
-preserved, so your internal logs stay useful.
 
 ## Options reference
 
-All options are optional. `guardedFetch`, `guardedFetchJson`, and `guardedFetchText`
-accept everything below; the last two rows are wrapper-only. Standard
-`RequestInit` fields (`method`, `headers`, `body`, ...) pass through as
-usual, except `redirect` and `signal`, which are managed internally
-(`signal` is accepted as a guarded-fetch option and merged with the internal
-timeout).
+All options are optional, and standard `RequestInit` fields (`method`,
+`headers`, `body`, ...) pass through as usual — except `redirect` and
+`signal`, which are managed internally. `maxResponseBytes` and
+`throwOnHttpError` exist only on the `guardedFetchJson` / `guardedFetchText`
+wrappers.
 
 | Option                         | Type                 | Default                | What it does                                                                                                                                                  |
 | ------------------------------ | -------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -249,7 +204,7 @@ covers:
   `X-Aws-Ec2-Metadata-Token`, `X-Metadata-Token`
 - **Session**: `Cookie` (see `allowedCookie`), `Set-Cookie`
 
-## DNS rebinding protection
+### DNS rebinding protection
 
 `guardedFetch` defends against DNS rebinding with a **two-layer** approach:
 
@@ -262,62 +217,10 @@ covers:
    returns a public IP for the check and `169.254.169.254` for the
    connection; this closes it.
 
-Layer 2 is active by default because `guardedFetch` uses `undici.fetch` and
-passes the shared safe dispatcher on every request. Injected `fetch`
-implementations must be undici-compatible for it to stay active. To
-explicitly opt out (dangerous; only when a trusted upstream proxy already
-guarantees the connection target), pass `dispatcher: null`.
-
-## Recipes
-
-### User-configured webhook / log drain
-
-Strict timeout, opaque errors, capped redirects — for URLs where the
-attacker can both choose the destination and read your error messages:
-
-```ts
-import { guardedFetch, isGuardedFetchError } from 'guarded-fetch';
-
-try {
-  await guardedFetch(webhook.url, {
-    method: 'POST',
-    headers: webhook.headers, // sanitized automatically
-    body: JSON.stringify(event),
-    timeoutMs: 4_000,
-    maxRedirects: 3,
-    opaqueErrors: true,
-  });
-} catch (err) {
-  if (isGuardedFetchError(err)) {
-    // err.code is intact for internal logging;
-    // err.message is safe to show the user.
-    logger.info({ code: err.code, hostname: err.hostname }, 'delivery failed');
-  }
-  throw err;
-}
-```
-
-### Locked-down fetch to a known vendor
-
-```ts
-const data = await guardedFetchJson(vendorUrl, {
-  httpsOnly: true,
-  allowedHosts: ['api.vendor.com'],
-  maxResponseBytes: 1 * 1024 * 1024,
-  throwOnHttpError: true,
-});
-```
-
-### Size-bounded reads on an existing Response
-
-```ts
-import { guardedFetch, readBodyAsJson } from 'guarded-fetch';
-
-const response = await guardedFetch(url);
-const data = await readBodyAsJson(response, {
-  maxResponseBytes: 512 * 1024,
-});
-```
+Layer 2 is on by default via the shared dispatcher; injected `fetch`
+implementations must be undici-compatible for it to stay active. Pass
+`dispatcher: null` to opt out (dangerous — only behind a trusted proxy that
+controls the connection target).
 
 ## API surface
 
@@ -364,27 +267,88 @@ retryability column.
 
 ## Observability
 
-When a URL is rejected for security reasons, the package dispatches a
-**block event** — `{ reason, domain, subReason? }` — to an optional handler.
-No event is emitted (and nothing is collected) until you register one;
-handlers never throw into callers. See
-[the FAQ entry](#what-if-i-want-to-log-or-count-blocked-requests) for setup.
+Blocked URLs dispatch a `{ reason, domain, subReason? }` event to an
+optional handler — nothing is collected until you register one, and handler
+errors never reach your request path:
 
-Event shapes:
+```ts
+import { setUrlBlockedHandler, URL_BLOCKED_LOG_MESSAGE } from 'guarded-fetch';
 
-- **Direct block** (preflight or connect-time pinning): one event. `reason`
-  is the error code (e.g. `hostname_unsafe`); `domain` is the blocked
-  hostname. For `hostname_unsafe`, `subReason` distinguishes the path —
-  e.g. `dns_unsafe_address` (preflight) vs `connect_time_ip_rejected`
-  (rebinding caught at socket connect).
-- **Unsafe redirect**: two events — first the redirect _target's_ failure
-  with its own reason and the target's domain, then
-  `redirect_to_unsafe_host` with the _original_ request hostname, so you
-  can see which upstream returned the bad `Location`.
-- **Redirect abuse**: one event — `too_many_redirects` (original hostname)
-  or `redirect_invalid` (hostname of the response with the bad `Location`).
+// Once at startup — works with any logger or metrics stack:
+setUrlBlockedHandler(({ reason, domain, subReason }) => {
+  logger.info({ reason, domain, subReason }, URL_BLOCKED_LOG_MESSAGE);
+});
+```
 
-## Limitations and sharp edges
+For per-request context, pass `onUrlBlocked` on the individual call — but
+connect-time (DNS-rebinding) blocks only reach the module-level handler, so
+register both for full coverage.
+
+## FAQ
+
+### Why use this instead of plain `fetch` + an IP check?
+
+A hand-rolled "resolve the hostname, check the IP, then fetch" sequence has
+a race condition (DNS rebinding) and misses a long tail of bypasses:
+redirects to internal hosts, IPv6 literals that embed private IPv4
+addresses, multi-record DNS responses where only one record is private, and
+header smuggling. See
+[DNS rebinding protection](#dns-rebinding-protection) for how the race is
+closed.
+
+### Why is `localhost` blocked? I need it for local development.
+
+Blocking loopback is the point — in production, `http://127.0.0.1:8080`
+from user input is an attack. For dev and tests, inject a fetch
+implementation instead of weakening the production configuration:
+
+```ts
+await guardedFetch(url, { fetch: mockFetch }); // tests
+```
+
+### Why did my request go through but the destination returned 401/404?
+
+Header sanitization is silent: blocked headers (see
+[the full list](#headers-that-are-stripped)) are dropped, not rejected, so
+a destination that relied on one fails on its side. For cookies there's a
+narrow opt-in: `allowedCookie`.
+
+### Why does `allowedHosts: []` block everything?
+
+An empty array means "allow these zero hosts" — deny-all — not "no
+allowlist configured". If you build the list dynamically, guard against it
+ending up empty; to disable allowlisting, omit the option entirely.
+
+### The URL is valid, the host is public — why `hostname_unsafe`?
+
+DNS is fail-closed: resolver errors and empty results block, and one
+private A/AAAA record rejects the whole host, even alongside public ones
+(split-horizon DNS). Use `isPermanentGuardedFetchError(err)` to decide
+whether to retry.
+
+### Can I validate a URL without making a request?
+
+Yes — use `assertUrlIsSafeToFetch` at write time, e.g. when a user saves a
+webhook URL:
+
+```ts
+import { assertUrlIsSafeToFetch } from 'guarded-fetch';
+
+await assertUrlIsSafeToFetch(body.webhookUrl, { httpsOnly: true });
+// Throws GuardedFetchError if unsafe; safe to store otherwise.
+```
+
+Note the DNS answer can change between write time and request time — the
+request-time checks still run on every fetch.
+
+### What about error messages leaking information to attackers?
+
+If the URL supplier can read your error messages (e.g. a webhook delivery
+log), distinguishable failures let them map your internal network.
+`opaqueErrors: true` collapses every failure into one generic message while
+preserving `err.code` for your internal logs.
+
+### What are the limitations?
 
 - **Injected `fetch` implementations must be undici-compatible**, or
   connect-time IP pinning silently doesn't apply to them.
