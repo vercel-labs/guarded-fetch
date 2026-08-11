@@ -1,1 +1,5 @@
 * @caleb-vercel
+
+# Release pipeline and ownership rules require explicit sign-off
+/.github/workflows/release.yml @caleb-vercel
+/.github/CODEOWNERS @caleb-vercel
