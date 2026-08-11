@@ -1,0 +1,53 @@
+# On every same-repo PR to main: format, lint, typecheck, build, and test the PR head.
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+
+# Cancel in-progress PR runs on new pushes; let main runs finish so the
+# release workflow's history stays uninterrupted.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    # Only run for same-repo (internal) PRs. Fork/external PRs are skipped for
+    # now — their head repo differs from this repo, so this guard is false.
+    # (We use `pull_request`, never `pull_request_target`, so forks could only
+    # ever get a read-only token with no secrets regardless; this stops the run
+    # entirely.)
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0 # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@fdbc4fdcf7d143a5d0a39e9a02e103b13e309024 # v6.0.4
+      - uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
+        with:
+          node-version: "24"
+          cache: "pnpm"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Format
+        run: pnpm format
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Build
+        run: pnpm build
+
+      - name: Unit tests
+        run: pnpm test
