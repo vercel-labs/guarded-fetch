@@ -373,4 +373,4 @@ preserving `err.code` for your internal logs.
 
 ## License
 
-MIT
+Apache-2.0
