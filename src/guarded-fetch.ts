@@ -174,17 +174,24 @@ export async function guardedFetch(
     onUrlBlocked,
   };
 
-  const { url } = await assertUrlIsSafeToFetch(rawUrl, assertOptions);
-
+  // The deadline starts before URL validation, not after it. The preflight
+  // DNS-resolves the hostname, and whoever supplied the URL may also control
+  // its DNS — so a slow resolver would otherwise stall the call for as long
+  // as it liked before `timeoutMs` began counting.
   const controller = new AbortController();
+  let validatedUrl: URL | undefined;
   const timer = setTimeout(() => {
+    const target = validatedUrl?.hostname ?? String(rawUrl);
     controller.abort(
       new GuardedFetchError(
         GuardedFetchErrorCode.TIMEOUT,
         opaqueErrors
           ? OPAQUE_ERROR_MESSAGE
-          : `Request to "${url.hostname}" timed out after ${timeoutMs}ms.`,
-        { hostname: url.hostname, url: url.toString() },
+          : `Request to "${target}" timed out after ${timeoutMs}ms.`,
+        {
+          hostname: validatedUrl?.hostname,
+          url: validatedUrl?.toString() ?? String(rawUrl),
+        },
       ),
     );
   }, timeoutMs);
@@ -200,19 +207,25 @@ export async function guardedFetch(
     }
   }
 
-  const outboundHeaders = sanitizeHeaders
-    ? sanitizeRequestHeaders(
-        headers as Parameters<typeof sanitizeRequestHeaders>[0],
-      )
-    : new Headers(
-        headers as ConstructorParameters<typeof Headers>[0] | undefined,
-      );
-
-  if (allowedCookie !== undefined) {
-    outboundHeaders.set('cookie', allowedCookie);
-  }
-
   try {
+    const { url } = await withDeadline(
+      assertUrlIsSafeToFetch(rawUrl, assertOptions),
+      controller.signal,
+    );
+    validatedUrl = url;
+
+    const outboundHeaders = sanitizeHeaders
+      ? sanitizeRequestHeaders(
+          headers as Parameters<typeof sanitizeRequestHeaders>[0],
+        )
+      : new Headers(
+          headers as ConstructorParameters<typeof Headers>[0] | undefined,
+        );
+
+    if (allowedCookie !== undefined) {
+      outboundHeaders.set('cookie', allowedCookie);
+    }
+
     return await followChain({
       url,
       method: method ?? 'GET',
@@ -233,6 +246,41 @@ export async function guardedFetch(
       externalSignal.removeEventListener('abort', onExternalAbort);
     }
   }
+}
+
+/**
+ * Races `promise` against `signal`, rejecting with the signal's reason as soon
+ * as it aborts.
+ *
+ * Used for the hostname-safety checks, which resolve DNS through
+ * `node:dns/promises` and take no `AbortSignal` of their own. The lookup keeps
+ * running in the background — this bounds how long the caller waits on it, and
+ * fails closed when the deadline passes.
+ */
+async function withDeadline<T>(
+  promise: Promise<T>,
+  signal: AbortSignal,
+): Promise<T> {
+  // The caller already started `promise`, and it keeps running whichever way
+  // the race goes. Observe its rejection here so a check that fails after the
+  // deadline cannot escape as an unhandled rejection — that would take down a
+  // process running with `--unhandled-rejections=strict`.
+  promise.catch(() => {
+    // Result is no longer wanted; the race outcome below is authoritative.
+  });
+
+  if (signal.aborted) {
+    throw signal.reason;
+  }
+
+  return await Promise.race([
+    promise,
+    new Promise<never>((_, reject) => {
+      signal.addEventListener('abort', () => reject(signal.reason), {
+        once: true,
+      });
+    }),
+  ]);
 }
 
 async function followChain(params: {
@@ -347,7 +395,12 @@ async function followChain(params: {
     await drainBody(response);
 
     try {
-      await assertUrlIsSafeToFetch(nextUrl, assertOptions);
+      // Same deadline as the initial check — a redirect target's DNS is just
+      // as attacker-influenced as the original URL's.
+      await withDeadline(
+        assertUrlIsSafeToFetch(nextUrl, assertOptions),
+        signal,
+      );
     } catch (error) {
       if (
         error instanceof GuardedFetchError &&
@@ -578,11 +631,47 @@ function stripHeader(headers: Headers, name: string): Headers {
   return out;
 }
 
+/**
+ * How much of a discarded redirect body is read before the connection is
+ * dropped instead. Small bodies are drained so the socket can be reused by
+ * the next hop; anything larger is not worth holding a connection for.
+ */
+const MAX_REDIRECT_DRAIN_BYTES = 64 * 1024;
+
+/**
+ * Releases the socket behind a redirect response whose body is never returned
+ * to the caller.
+ *
+ * Reads at most {@link MAX_REDIRECT_DRAIN_BYTES} and cancels beyond that.
+ * Buffering the whole body here would be unbounded: redirect bodies are
+ * attacker-controlled, `maxResponseBytes` only applies to the readers in
+ * `read-body.ts`, and `timeoutMs` caps how long a hop may take but not how
+ * much memory it may consume while doing so.
+ */
 async function drainBody(response: Response): Promise<void> {
+  const body = response.body;
+  if (!body) {
+    return;
+  }
+
+  const reader = body.getReader();
   try {
-    // Consume to release the socket; ignore any errors.
-    await response.arrayBuffer();
+    let drained = 0;
+    while (drained <= MAX_REDIRECT_DRAIN_BYTES) {
+      const { done, value } = await reader.read();
+      if (done) {
+        return;
+      }
+      drained += value?.byteLength ?? 0;
+    }
+    await reader.cancel();
   } catch {
-    // no-op
+    // Aborted, errored, or already-consumed stream — nothing left to release.
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {
+      // Already released by cancel().
+    }
   }
 }

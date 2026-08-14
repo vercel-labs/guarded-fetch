@@ -40,7 +40,7 @@ export async function guardedFetchJson<T = unknown>(
   const startedAt = Date.now();
   const deadlineAt = startedAt + (timeoutMs ?? DEFAULT_TIMEOUT_MS);
   const response = await guardedFetch(url, { ...fetchOptions, timeoutMs });
-  maybeThrowForStatus(response, throwOnHttpError, options.opaqueErrors);
+  await maybeThrowForStatus(response, throwOnHttpError, options.opaqueErrors);
   return readBodyAsJson<T>(response, {
     maxResponseBytes,
     deadlineAt,
@@ -62,7 +62,7 @@ export async function guardedFetchText(
   const startedAt = Date.now();
   const deadlineAt = startedAt + (timeoutMs ?? DEFAULT_TIMEOUT_MS);
   const response = await guardedFetch(url, { ...fetchOptions, timeoutMs });
-  maybeThrowForStatus(response, throwOnHttpError, options.opaqueErrors);
+  await maybeThrowForStatus(response, throwOnHttpError, options.opaqueErrors);
   return readBodyAsText(response, {
     maxResponseBytes,
     deadlineAt,
@@ -70,14 +70,25 @@ export async function guardedFetchText(
   });
 }
 
-function maybeThrowForStatus(
+async function maybeThrowForStatus(
   response: Response,
   throwOnHttpError: boolean | undefined,
   opaqueErrors: boolean | undefined,
-): void {
+): Promise<void> {
   if (!throwOnHttpError || response.ok) {
     return;
   }
+
+  // The body is never handed to the caller on this path, so cancel it before
+  // throwing. Leaving it unread holds the stream and its socket open — and an
+  // error response is attacker-controlled just like a successful one, so its
+  // size is not bounded by anything here.
+  try {
+    await response.body?.cancel();
+  } catch {
+    // The stream may already be errored or locked; nothing to release.
+  }
+
   throw new GuardedFetchError(
     GuardedFetchErrorCode.NETWORK_ERROR,
     opaqueErrors
