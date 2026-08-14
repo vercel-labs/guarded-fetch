@@ -168,6 +168,7 @@ protected against:
 | DNS rebinding (TTL=0 flip between check and connect)                                        | IP re-validated inside the socket connect via a pinned undici lookup.       |
 | Multi-record DNS races (one public + one private record)                                    | Rejected if _any_ resolved A/AAAA record is unsafe.                         |
 | Private IPv4 hidden in IPv6 literals (`::ffff:`, 6to4 `2002::/16`, NAT64 `64:ff9b::/96`)    | Embedded IPv4 is decoded and classified with the same rules as native IPv4. |
+| NAT64 translation to private IPv4 via the local-use prefix (`64:ff9b:1::/48`)               | Whole range rejected — it addresses a local translator, never a real host.  |
 | Redirect to an internal host after an initial safe response                                 | Manual redirect following; every hop re-runs all checks.                    |
 | Infinite / abusive redirect chains                                                          | Hop cap (`maxRedirects`, default 5).                                        |
 | Cloud-credential theft via metadata headers (`Metadata-Flavor`, `X-aws-ec2-metadata-token`) | Header stripped.                                                            |
@@ -186,7 +187,8 @@ Requests are refused when the hostname resolves to (or literally is) any of:
 - Private ranges (`10/8`, `172.16/12`, `192.168/16`, IPv6 ULA `fc00::/7`)
 - Link-local — where cloud metadata lives (`169.254.0.0/16`, `fe80::/10`)
 - CGNAT (`100.64.0.0/10`) — note this covers Tailscale-style addresses
-- IPv6 forms that embed any of the above (IPv4-mapped, 6to4, NAT64)
+- IPv6 forms that embed any of the above (IPv4-mapped, 6to4, NAT64
+  `64:ff9b::/96`), plus the NAT64 local-use prefix `64:ff9b:1::/48` in full
 - `localhost`, `*.localhost`, and `*.local` — blocked by name, regardless
   of what DNS says
 
@@ -222,27 +224,50 @@ implementations must be undici-compatible for it to stay active. Pass
 `dispatcher: null` to opt out (dangerous — only behind a trusted proxy that
 controls the connection target).
 
+### Using `createGuardedLookup` on its own
+
+A `dns.lookup` function only runs when the host actually needs resolving.
+Node's socket APIs skip DNS entirely for IP literals, so **no `lookup`
+implementation is called for `net.connect({ host: '127.0.0.1' })`** — this one
+included. On its own, `createGuardedLookup` is a DNS-rebinding guard, not a
+complete SSRF guard.
+
+`guardedFetch` is unaffected: it runs `assertUrlIsSafeToFetch` first, which
+rejects unsafe IP literals before any socket work. `getSharedGuardedDispatcher`
+and `createGuardedDispatcher` are also complete on their own — they pair the
+lookup with a pre-connect IP-literal check.
+
+If you are wiring sockets by hand, validate the target first:
+
+```ts
+import net from 'node:net';
+import { assertUrlIsSafeToFetch, createGuardedLookup } from 'guarded-fetch';
+
+await assertUrlIsSafeToFetch(target); // rejects IP literals and unsafe DNS
+net.connect({ host, port, lookup: createGuardedLookup() });
+```
+
 ## API surface
 
-| Export                                       | Purpose                                                                                                                          |
-| -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `guardedFetch(url, opts?)`                   | SSRF-safe `fetch` — returns a `Response`.                                                                                        |
-| `guardedFetchJson<T>(url, opts?)`            | Fetch + bounded JSON parse.                                                                                                      |
-| `guardedFetchText(url, opts?)`               | Fetch + bounded UTF-8 read.                                                                                                      |
-| `assertUrlIsSafeToFetch(url, opts?)`         | Pre-flight validator — no HTTP request, but does resolve DNS.                                                                    |
-| `sanitizeRequestHeaders(headers)`            | Strip SSRF/proxy/cookie headers → `Headers`.                                                                                     |
-| `readBodyAsJson(res, opts?)`                 | Size-bounded JSON reader for an existing `Response`.                                                                             |
-| `readBodyAsText(res, opts?)`                 | Size-bounded text reader for an existing `Response`.                                                                             |
-| `GuardedFetchError`, `GuardedFetchErrorCode` | Structured error type for every failure mode.                                                                                    |
-| `isGuardedFetchError(v)`                     | Type guard resilient to duplicate module copies.                                                                                 |
-| `isPermanentGuardedFetchError(v)`            | True when the failure cannot succeed on retry.                                                                                   |
-| `BLOCKED_REQUEST_HEADERS`                    | The canonical header blocklist.                                                                                                  |
-| `createGuardedLookup(opts?)`                 | `dns.lookup`-compatible function that validates and pins IPs inline — embed in `https.Agent`, `net.connect`, or an undici Agent. |
-| `isSafeIpAddress(ip)`                        | Returns `true` for public IPv4/IPv6 addresses.                                                                                   |
-| `getSharedGuardedDispatcher()`               | Lazy process-wide undici `Agent` used by default. Connection-pooled.                                                             |
-| `createGuardedDispatcher(opts?)`             | Fresh undici `Agent` with IP pinning. Caller must `.close()`.                                                                    |
-| `setUrlBlockedHandler(handler)`              | Register a process-wide block-event handler.                                                                                     |
-| `URL_BLOCKED_LOG_MESSAGE`                    | Suggested constant log message for block events.                                                                                 |
+| Export                                       | Purpose                                                                                                                  |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `guardedFetch(url, opts?)`                   | SSRF-safe `fetch` — returns a `Response`.                                                                                |
+| `guardedFetchJson<T>(url, opts?)`            | Fetch + bounded JSON parse.                                                                                              |
+| `guardedFetchText(url, opts?)`               | Fetch + bounded UTF-8 read.                                                                                              |
+| `assertUrlIsSafeToFetch(url, opts?)`         | Pre-flight validator — no HTTP request, but does resolve DNS.                                                            |
+| `sanitizeRequestHeaders(headers)`            | Strip SSRF/proxy/cookie headers → `Headers`.                                                                             |
+| `readBodyAsJson(res, opts?)`                 | Size-bounded JSON reader for an existing `Response`.                                                                     |
+| `readBodyAsText(res, opts?)`                 | Size-bounded text reader for an existing `Response`.                                                                     |
+| `GuardedFetchError`, `GuardedFetchErrorCode` | Structured error type for every failure mode.                                                                            |
+| `isGuardedFetchError(v)`                     | Type guard resilient to duplicate module copies.                                                                         |
+| `isPermanentGuardedFetchError(v)`            | True when the failure cannot succeed on retry.                                                                           |
+| `BLOCKED_REQUEST_HEADERS`                    | The canonical header blocklist.                                                                                          |
+| `createGuardedLookup(opts?)`                 | `dns.lookup`-compatible function that validates and pins resolved IPs inline. Rebinding guard only — see the note below. |
+| `isSafeIpAddress(ip)`                        | Returns `true` for public IPv4/IPv6 addresses.                                                                           |
+| `getSharedGuardedDispatcher()`               | Lazy process-wide undici `Agent` used by default. Connection-pooled.                                                     |
+| `createGuardedDispatcher(opts?)`             | Fresh undici `Agent` with IP pinning. Caller must `.close()`.                                                            |
+| `setUrlBlockedHandler(handler)`              | Register a process-wide block-event handler.                                                                             |
+| `URL_BLOCKED_LOG_MESSAGE`                    | Suggested constant log message for block events.                                                                         |
 
 ## Error codes
 

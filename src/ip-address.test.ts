@@ -98,4 +98,33 @@ describe(isAddressUnsafeForServerSideFetch, () => {
       expect(isSafeIpAddress(address)).toBe(true);
     },
   );
+
+  // RFC 8215 local-use NAT64 (64:ff9b:1::/48) is rejected as a whole range.
+  // The translation prefix length is deployment-defined, so the embedded IPv4
+  // can sit at any RFC 6052 §2.2 offset — including the public-looking ones,
+  // which is why the last two cases are blocked too.
+  it.each([
+    ['64:ff9b:1::a9fe:a9fe', '/96 metadata'],
+    ['64:ff9b:1:a9fe:0:a9fe::', '/48 metadata'],
+    ['64:ff9b:1:0:a9:fea9:fe00:0', '/64 metadata'],
+    ['64:ff9b:1::7f00:1', '/96 loopback'],
+    ['64:ff9b:1::a00:1', '/96 RFC1918'],
+    ['64:ff9b:1::', 'bare prefix'],
+    ['64:ff9b:1::0808:0808', '/96 public-looking'],
+    ['64:ff9b:1:0808:0:0808::', '/48 public-looking'],
+  ])('blocks local-use NAT64 prefix: %s (%s)', (address: string) => {
+    expect(isAddressUnsafeForServerSideFetch(address)).toBe(true);
+    expect(isSafeIpAddress(address)).toBe(false);
+  });
+
+  it.each([
+    ['64:ff9b:10::0808:0808', 'distinct prefix, not 64:ff9b:1::/48'],
+    ['64:ff9c:1::0808:0808', 'distinct prefix, not NAT64'],
+  ])(
+    'does not over-block neighbouring prefixes: %s (%s)',
+    (address: string) => {
+      expect(isAddressUnsafeForServerSideFetch(address)).toBe(false);
+      expect(isSafeIpAddress(address)).toBe(true);
+    },
+  );
 });

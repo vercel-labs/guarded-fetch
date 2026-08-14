@@ -43,10 +43,22 @@ type LookupCallback = (
  * - On any unsafe IP, invokes the callback with a {@link GuardedFetchError}
  *   whose `code` is `HOSTNAME_UNSAFE`. The socket `connect` then fails.
  *
- * Use this as:
- * - `new undici.Agent({ connect: { lookup: createGuardedLookup() } })`
- * - `new https.Agent({ lookup: createGuardedLookup() })`
- * - Passed directly to `net.connect({ host, lookup: createGuardedLookup() })`.
+ * **This only covers hosts that get resolved.** Node's socket APIs skip DNS
+ * entirely when the host is already an IP literal, so a `lookup` function is
+ * never called for `net.connect({ host: '127.0.0.1' })` — no `lookup`
+ * implementation can guard that case, including this one. On its own this is
+ * a rebinding guard, not a complete SSRF guard.
+ *
+ * For a complete guard, use {@link guardedFetch}, or
+ * {@link getSharedGuardedDispatcher} / {@link createGuardedDispatcher}, which
+ * pair this lookup with a pre-connect IP-literal check. If you are wiring
+ * sockets by hand, run {@link assertUrlIsSafeToFetch} (or
+ * {@link isSafeIpAddress} for a bare host) on the target first:
+ *
+ * ```ts
+ * await assertUrlIsSafeToFetch(target);
+ * net.connect({ host, port, lookup: createGuardedLookup() });
+ * ```
  */
 export function createGuardedLookup(
   options: GuardedLookupOptions = {},
