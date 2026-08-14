@@ -455,14 +455,27 @@ async function executeFetch(params: {
       throw signal.reason;
     }
 
-    // The guarded-lookup rejects the connect with a GuardedFetchError. undici
-    // typically wraps lookup errors inside a TypeError/fetch error with the
-    // original error available via `.cause` (sometimes nested one level
-    // deeper). Walk the chain and surface the original if we find one so
-    // that callers see `HOSTNAME_UNSAFE` rather than a generic network
-    // error when DNS rebinding is blocked at connect time.
+    // The guarded connector rejects the connect with a GuardedFetchError.
+    // undici typically wraps connect errors inside a TypeError/fetch error
+    // with the original error available via `.cause` (sometimes nested one
+    // level deeper). Walk the chain and surface the original if we find one
+    // so that callers see `HOSTNAME_UNSAFE` rather than a generic network
+    // error when an unsafe target is blocked at connect time.
     const unwrapped = findGuardedFetchErrorInCause(error);
     if (unwrapped) {
+      // The connector composes its own message and cannot see this call's
+      // `opaqueErrors` — the shared dispatcher is process-wide and is built
+      // before any caller options exist. Re-wrap here so the caller's choice
+      // wins no matter which dispatcher produced the rejection; otherwise the
+      // rejected address leaks in the message despite `opaqueErrors: true`.
+      if (opaqueErrors && unwrapped.message !== OPAQUE_ERROR_MESSAGE) {
+        throw new GuardedFetchError(unwrapped.code, OPAQUE_ERROR_MESSAGE, {
+          hostname: unwrapped.hostname ?? url.hostname,
+          url: unwrapped.url ?? url.toString(),
+          status: unwrapped.status,
+          cause: unwrapped,
+        });
+      }
       throw unwrapped;
     }
 
