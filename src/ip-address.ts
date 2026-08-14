@@ -93,9 +93,15 @@ function ipv4FromHextetPair(hi: number, lo: number): string {
 }
 
 /**
- * Decodes IPv4 addresses embedded in 6to4 (`2002::/16`) and NAT64 well-known
- * prefix (`64:ff9b::/96`) literals so they can be checked with the same IPv4
- * classifier as `::ffff:` mapped forms.
+ * Decodes IPv4 addresses embedded in 6to4 (`2002::/16`) and the NAT64
+ * well-known prefix (`64:ff9b::/96`) so they can be checked with the same
+ * IPv4 classifier as `::ffff:` mapped forms.
+ *
+ * The RFC 8215 local-use prefix `64:ff9b:1::/48` is not decoded here — it is
+ * rejected wholesale by {@link isUnsafeIpv6Address}. Its translation-prefix
+ * length is chosen by the deployment, so the embedded IPv4 could sit at any
+ * of the RFC 6052 §2.2 offsets and there is no way to tell which from the
+ * literal alone.
  */
 function tryDecodeEmbeddedIpv4FromIpv6(v6: string): string | null {
   const hextets = expandIpv6Hextets(v6);
@@ -127,13 +133,25 @@ function tryDecodeEmbeddedIpv4FromIpv6(v6: string): string | null {
 
 /**
  * IPv6 ranges checked explicitly: unique local `fc00::/7`, link-local
- * `fe80::/10`, deprecated site-local `fec0::/10`, multicast `ff00::/8`, and
- * documentation `2001:db8::/32`.
+ * `fe80::/10`, deprecated site-local `fec0::/10`, multicast `ff00::/8`,
+ * documentation `2001:db8::/32`, and the NAT64 local-use prefix
+ * `64:ff9b:1::/48`.
  */
 function isUnsafeIpv6Address(v6: string): boolean {
   const lower = normalizeIpv6Literal(v6);
 
   if (lower === '::' || lower === '::1') {
+    return true;
+  }
+
+  // 64:ff9b:1::/48 — RFC 8215 local-use NAT64. `ipaddr.js` classifies this as
+  // ordinary unicast, but a translator on the path rewrites it to whatever
+  // IPv4 address is encoded in the low bits — including private and metadata
+  // space. The prefix length is deployment-defined, so the embedded IPv4 can
+  // sit at any RFC 6052 §2.2 offset and cannot be recovered reliably from the
+  // literal. Reject the range outright: it addresses a local translator and
+  // is never a legitimate target for an outbound fetch.
+  if (/^64:ff9b:1(?::|$)/i.test(lower)) {
     return true;
   }
 

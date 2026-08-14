@@ -168,6 +168,7 @@ protected against:
 | DNS rebinding (TTL=0 flip between check and connect)                                        | IP re-validated inside the socket connect via a pinned undici lookup.       |
 | Multi-record DNS races (one public + one private record)                                    | Rejected if _any_ resolved A/AAAA record is unsafe.                         |
 | Private IPv4 hidden in IPv6 literals (`::ffff:`, 6to4 `2002::/16`, NAT64 `64:ff9b::/96`)    | Embedded IPv4 is decoded and classified with the same rules as native IPv4. |
+| NAT64 translation to private IPv4 via the local-use prefix (`64:ff9b:1::/48`)               | Whole range rejected — it addresses a local translator, never a real host.  |
 | Redirect to an internal host after an initial safe response                                 | Manual redirect following; every hop re-runs all checks.                    |
 | Infinite / abusive redirect chains                                                          | Hop cap (`maxRedirects`, default 5).                                        |
 | Cloud-credential theft via metadata headers (`Metadata-Flavor`, `X-aws-ec2-metadata-token`) | Header stripped.                                                            |
@@ -186,7 +187,8 @@ Requests are refused when the hostname resolves to (or literally is) any of:
 - Private ranges (`10/8`, `172.16/12`, `192.168/16`, IPv6 ULA `fc00::/7`)
 - Link-local — where cloud metadata lives (`169.254.0.0/16`, `fe80::/10`)
 - CGNAT (`100.64.0.0/10`) — note this covers Tailscale-style addresses
-- IPv6 forms that embed any of the above (IPv4-mapped, 6to4, NAT64)
+- IPv6 forms that embed any of the above (IPv4-mapped, 6to4, NAT64
+  `64:ff9b::/96`), plus the NAT64 local-use prefix `64:ff9b:1::/48` in full
 - `localhost`, `*.localhost`, and `*.local` — blocked by name, regardless
   of what DNS says
 
