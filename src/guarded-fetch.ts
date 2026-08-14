@@ -565,11 +565,47 @@ function stripHeader(headers: Headers, name: string): Headers {
   return out;
 }
 
+/**
+ * How much of a discarded redirect body is read before the connection is
+ * dropped instead. Small bodies are drained so the socket can be reused by
+ * the next hop; anything larger is not worth holding a connection for.
+ */
+const MAX_REDIRECT_DRAIN_BYTES = 64 * 1024;
+
+/**
+ * Releases the socket behind a redirect response whose body is never returned
+ * to the caller.
+ *
+ * Reads at most {@link MAX_REDIRECT_DRAIN_BYTES} and cancels beyond that.
+ * Buffering the whole body here would be unbounded: redirect bodies are
+ * attacker-controlled, `maxResponseBytes` only applies to the readers in
+ * `read-body.ts`, and `timeoutMs` caps how long a hop may take but not how
+ * much memory it may consume while doing so.
+ */
 async function drainBody(response: Response): Promise<void> {
+  const body = response.body;
+  if (!body) {
+    return;
+  }
+
+  const reader = body.getReader();
   try {
-    // Consume to release the socket; ignore any errors.
-    await response.arrayBuffer();
+    let drained = 0;
+    while (drained <= MAX_REDIRECT_DRAIN_BYTES) {
+      const { done, value } = await reader.read();
+      if (done) {
+        return;
+      }
+      drained += value?.byteLength ?? 0;
+    }
+    await reader.cancel();
   } catch {
-    // no-op
+    // Aborted, errored, or already-consumed stream — nothing left to release.
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {
+      // Already released by cancel().
+    }
   }
 }

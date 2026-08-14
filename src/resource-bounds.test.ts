@@ -3,6 +3,7 @@ import type { AddressInfo } from 'node:net';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { guardedFetch } from './guarded-fetch';
 import { guardedFetchText } from './guarded-fetch-helpers';
 
 const BODY_BYTES = 16 * 1024 * 1024;
@@ -69,6 +70,29 @@ afterEach(async () => {
 });
 
 describe('discarded bodies are bounded', () => {
+  it('does not buffer a whole redirect body while draining it', async () => {
+    const { server, sent } = createStreamingServer((res) => {
+      res.writeHead(302, {
+        location: 'http://10.0.0.1/next',
+        'content-length': String(BODY_BYTES),
+      });
+    });
+    active = server;
+    const port = await listen(server);
+
+    await expect(
+      guardedFetch(`http://127.0.0.1:${port}/`, {
+        allowedHosts: ['127.0.0.1'],
+        skipSsrfCheckForAllowedHosts: true,
+        dispatcher: null,
+        timeoutMs: 30_000,
+      }),
+    ).rejects.toThrow();
+
+    // Draining with `arrayBuffer()` pulled the entire body into memory.
+    expect(sent()).toBeLessThan(BODY_BYTES / 4);
+  });
+
   it('cancels the body when throwOnHttpError rejects a response', async () => {
     const { server, socketClosed } = createStreamingServer((res) => {
       res.writeHead(500, { 'content-length': String(BODY_BYTES) });
