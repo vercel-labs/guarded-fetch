@@ -1,6 +1,6 @@
 {
   "name": "guarded-fetch",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "SSRF-safe HTTP(S) fetch utilities backed by undici: DNS-rebinding protection, redirect validation, header sanitization, and bounded body reads",
   "author": "Vercel",
   "license": "Apache-2.0",
@@ -27,7 +27,7 @@
   },
   "dependencies": {
     "ipaddr.js": "2.2.0",
-    "undici": "7.28.0"
+    "undici": "7.29.0"
   },
   "devDependencies": {
     "@types/node": "25.6.0",
