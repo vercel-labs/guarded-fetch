@@ -144,7 +144,7 @@ wrappers.
 | `opaqueErrors`                 | `boolean`            | `false`                | Replace every error message with one generic string so failures are indistinguishable to attackers. Error `code` is preserved.                                |
 | `onUrlBlocked`                 | `function`           | _(none)_               | Per-call block-event handler; overrides the module-level `setUrlBlockedHandler` for this call.                                                                |
 | `signal`                       | `AbortSignal`        | _(none)_               | External abort signal, combined with the internal timeout.                                                                                                    |
-| `fetch`                        | `fetch` impl         | `undici.fetch`         | Injectable fetch for tests. Must be undici-compatible.                                                                                                        |
+| `fetch`                        | `fetch` impl         | `undici.fetch`         | Injectable fetch — for tests, or to stay on a framework's patched global. Must accept undici's `dispatcher` init property, with an undici major matching `process.versions.undici`. See [Keeping a patched global `fetch`](#keeping-a-patched-global-fetch). |
 | `dispatcher`                   | `Dispatcher \| null` | shared safe dispatcher | undici dispatcher for the request. `null` disables connect-time IP pinning — dangerous; only for when a trusted proxy already controls the connection target. |
 | `maxResponseBytes`             | `number`             | `10 * 1024 * 1024`     | _(wrappers only)_ Max body size; exceeding it throws `response_too_large`.                                                                                    |
 | `throwOnHttpError`             | `boolean`            | `false`                | _(wrappers only)_ Throw on non-2xx responses instead of returning the body.                                                                                   |
@@ -246,6 +246,46 @@ import { assertUrlIsSafeToFetch, createGuardedLookup } from 'guarded-fetch';
 await assertUrlIsSafeToFetch(target); // rejects IP literals and unsafe DNS
 net.connect({ host, port, lookup: createGuardedLookup() });
 ```
+
+### Keeping a patched global `fetch`
+
+Frameworks patch `globalThis.fetch` to add caching and instrumentation (Next.js
+is the common case). Passing it as `fetch` keeps you on that path — but the
+dispatcher that carries connect-time pinning reaches it as undici's
+**non-standard `dispatcher` init property**, so the handoff is version-coupled.
+Build the Agent yourself from an undici that matches the runtime:
+
+```ts
+import { Agent } from 'undici'; // major must match process.versions.undici
+import { assertUrlIsSafeToFetch, createGuardedLookup } from 'guarded-fetch';
+
+const dispatcher = new Agent({ connect: { lookup: createGuardedLookup() } });
+
+await assertUrlIsSafeToFetch(new URL(target)); // rejects unsafe IP literals
+const response = await fetch(target, { dispatcher });
+```
+
+`createGuardedLookup` resolves through `node:dns` and carries no undici types,
+so it attaches to any Agent regardless of version. The `assertUrlIsSafeToFetch`
+call is not optional — see
+[Using `createGuardedLookup` on its own](#using-createguardedlookup-on-its-own).
+
+Two ways this goes wrong:
+
+- **undici major skew.** Node bundles its own undici
+  (`process.versions.undici`). Handing core's `fetch` an Agent from a different
+  userland major fails undici's dispatch-handler interface check, and every
+  request throws `network_error` (`invalid onRequestStart method` underneath).
+  Fails closed, but a Node upgrade can trigger it.
+- **An init-stripping wrapper.** `dispatcher` is not a standard `RequestInit`
+  member. A wrapper that rebuilds init from a fixed set of keys drops it, and
+  the request proceeds with **no connect-time pin** — the
+  `assertUrlIsSafeToFetch` preflight still applies, but the rebinding window
+  reopens. (Node's own `Request` constructor preserves it.)
+
+If you cannot pin the versions, prefer the default dispatcher (`guardedFetch`
+with no `fetch` override) and cache above the transport — a cached function
+wrapper rather than a cached fetch.
 
 ## API surface
 
@@ -375,8 +415,11 @@ preserving `err.code` for your internal logs.
 
 ### What are the limitations?
 
-- **Injected `fetch` implementations must be undici-compatible**, or
-  connect-time IP pinning silently doesn't apply to them.
+- **Injected `fetch` implementations must accept undici's `dispatcher` init
+  property**, with an undici major matching `process.versions.undici`. A skew
+  fails loudly (`network_error`); a wrapper that strips unknown init keys
+  silently drops the connect-time pin. See
+  [Keeping a patched global `fetch`](#keeping-a-patched-global-fetch).
 - **`node:http`-level `localAddress`/`family` hints** set outside this
   package can reintroduce private-network reachability. Don't combine them
   with user-controlled URLs.
