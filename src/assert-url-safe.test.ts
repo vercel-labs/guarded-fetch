@@ -138,12 +138,66 @@ describe(assertUrlIsSafeToFetch, () => {
     ).resolves.toMatchObject({ hostname: 'allowed.example' });
   });
 
-  it('accepts subdomain match in allowlist', async () => {
+  it('rejects a subdomain of a bare allowlist entry (explicit match only)', async () => {
     await expect(
       assertUrlIsSafeToFetch('https://api.allowed.example', {
         allowedHosts: ['allowed.example'],
       }),
+    ).rejects.toMatchObject({
+      code: GuardedFetchErrorCode.HOST_NOT_ALLOWED,
+      hostname: 'api.allowed.example',
+    });
+  });
+
+  it('accepts a single-level subdomain via wildcard entry', async () => {
+    await expect(
+      assertUrlIsSafeToFetch('https://api.allowed.example', {
+        allowedHosts: ['*.allowed.example'],
+      }),
     ).resolves.toMatchObject({ hostname: 'api.allowed.example' });
+  });
+
+  it('rejects a deeper subdomain even with a wildcard entry', async () => {
+    await expect(
+      assertUrlIsSafeToFetch('https://a.b.allowed.example', {
+        allowedHosts: ['*.allowed.example'],
+      }),
+    ).rejects.toMatchObject({
+      code: GuardedFetchErrorCode.HOST_NOT_ALLOWED,
+    });
+  });
+
+  it('accepts any subdomain depth via ** wildcard entry', async () => {
+    await expect(
+      assertUrlIsSafeToFetch('https://a.b.allowed.example', {
+        allowedHosts: ['**.allowed.example'],
+      }),
+    ).resolves.toMatchObject({ hostname: 'a.b.allowed.example' });
+    await expect(
+      assertUrlIsSafeToFetch('https://api.allowed.example', {
+        allowedHosts: ['**.allowed.example'],
+      }),
+    ).resolves.toMatchObject({ hostname: 'api.allowed.example' });
+  });
+
+  it('rejects the base domain when only a ** wildcard entry is listed', async () => {
+    await expect(
+      assertUrlIsSafeToFetch('https://allowed.example', {
+        allowedHosts: ['**.allowed.example'],
+      }),
+    ).rejects.toMatchObject({
+      code: GuardedFetchErrorCode.HOST_NOT_ALLOWED,
+    });
+  });
+
+  it('rejects the base domain when only a wildcard entry is listed', async () => {
+    await expect(
+      assertUrlIsSafeToFetch('https://allowed.example', {
+        allowedHosts: ['*.allowed.example'],
+      }),
+    ).rejects.toMatchObject({
+      code: GuardedFetchErrorCode.HOST_NOT_ALLOWED,
+    });
   });
 
   it('does not match allowlist suffix across unrelated domain', async () => {
@@ -158,7 +212,7 @@ describe(assertUrlIsSafeToFetch, () => {
 
   it('skips SSRF check when skipSsrfCheckForAllowedHosts is set', async () => {
     const result = await assertUrlIsSafeToFetch('https://api.allowed.example', {
-      allowedHosts: ['allowed.example'],
+      allowedHosts: ['*.allowed.example'],
       skipSsrfCheckForAllowedHosts: true,
     });
     expect(result.hostname).toBe('api.allowed.example');
@@ -219,8 +273,8 @@ describe('assertUrlIsSafeToFetch — SSRF bypass edge cases', () => {
   });
 
   // A `startsWith`-style allowlist check without a trailing-dot boundary lets
-  // `allowed.example.evil.com` pass. The allowlist matcher is right-anchored
-  // on a dot boundary, so it must not.
+  // `allowed.example.evil.com` pass. The allowlist matcher requires an exact
+  // match (or a single-level `*.` wildcard), so it must not.
   it('rejects a look-alike domain that only suffix-matches the allowlist', async () => {
     await expect(
       assertUrlIsSafeToFetch('https://allowed.example.evil.com/', {
@@ -257,10 +311,68 @@ describe(isHostInAllowlist, () => {
     );
   });
 
-  it('returns true for subdomain', () => {
+  it('returns false for a subdomain of a bare entry', () => {
+    expect(isHostInAllowlist('a.allowed.example', ['allowed.example'])).toBe(
+      false,
+    );
     expect(isHostInAllowlist('a.b.allowed.example', ['allowed.example'])).toBe(
+      false,
+    );
+  });
+
+  it('matches exactly one subdomain level for a *. wildcard entry', () => {
+    expect(isHostInAllowlist('a.allowed.example', ['*.allowed.example'])).toBe(
       true,
     );
+    expect(
+      isHostInAllowlist('a.b.allowed.example', ['*.allowed.example']),
+    ).toBe(false);
+    expect(isHostInAllowlist('allowed.example', ['*.allowed.example'])).toBe(
+      false,
+    );
+  });
+
+  it('matches wildcard entries case-insensitively', () => {
+    expect(
+      isHostInAllowlist('API.Allowed.Example', ['*.allowed.example']),
+    ).toBe(true);
+    expect(
+      isHostInAllowlist('A.B.Allowed.Example', ['**.Allowed.Example']),
+    ).toBe(true);
+  });
+
+  it('matches one or more subdomain levels for a **. wildcard entry', () => {
+    expect(isHostInAllowlist('a.allowed.example', ['**.allowed.example'])).toBe(
+      true,
+    );
+    expect(
+      isHostInAllowlist('a.b.c.allowed.example', ['**.allowed.example']),
+    ).toBe(true);
+    expect(isHostInAllowlist('allowed.example', ['**.allowed.example'])).toBe(
+      false,
+    );
+    expect(
+      isHostInAllowlist('notallowed.example', ['**.allowed.example']),
+    ).toBe(false);
+  });
+
+  it('rejects empty / leading-dot labels for both wildcard forms', () => {
+    // `.base` and `..base` have an empty leftmost label — not a real subdomain.
+    for (const entry of ['*.allowed.example', '**.allowed.example']) {
+      expect(isHostInAllowlist('.allowed.example', [entry])).toBe(false);
+      expect(isHostInAllowlist('..allowed.example', [entry])).toBe(false);
+    }
+    // Empty middle label still rejected by the single-label wildcard.
+    expect(isHostInAllowlist('a..allowed.example', ['*.allowed.example'])).toBe(
+      false,
+    );
+  });
+
+  it('ignores a bare "*" or "**" wildcard entry', () => {
+    expect(isHostInAllowlist('anything.example', ['*'])).toBe(false);
+    expect(isHostInAllowlist('anything.example', ['**'])).toBe(false);
+    expect(isHostInAllowlist('anything.example', ['*.'])).toBe(false);
+    expect(isHostInAllowlist('anything.example', ['**.'])).toBe(false);
   });
 
   it('returns false when suffix does not follow a dot boundary', () => {

@@ -28,9 +28,17 @@ export interface AssertUrlSafeOptions {
   httpsOnly?: boolean;
 
   /**
-   * Optional hostname allowlist. If provided, the URL's hostname must either
-   * match an entry exactly (case-insensitive) or be a subdomain of one
-   * (`*.<entry>`). Passing an empty array treats every host as disallowed.
+   * Optional hostname allowlist. If provided, the URL's hostname must match
+   * an entry exactly (case-insensitive). Two leading-wildcard forms exist:
+   * `*.example.com` matches exactly one subdomain level (`api.example.com`
+   * but not `a.b.example.com`); `**.example.com` matches any number of
+   * subdomain levels (`a.b.example.com` too). Neither wildcard matches the
+   * base domain itself — list `example.com` explicitly if you want it.
+   * Passing an empty array treats every host as disallowed.
+   *
+   * Wildcards are not validated against the public-suffix list: `**.com`
+   * would allow every `.com` host. Scope wildcard entries to domains you
+   * control.
    *
    * If omitted, any publicly-resolving host passes.
    */
@@ -177,14 +185,22 @@ export async function assertUrlIsSafeToFetch(
 }
 
 /**
- * Returns true if `hostname` equals any entry in `allowedHosts` exactly, or
- * is a subdomain of one. All comparisons are case-insensitive.
+ * Returns true if `hostname` matches an entry in `allowedHosts`. Entries are
+ * explicit matches only (case-insensitive), plus two leading-wildcard forms:
  *
- * Examples (with allowlist `['example.com']`):
- * - `example.com`          → true (exact)
- * - `api.example.com`      → true (subdomain)
- * - `notexample.com`       → false (would only match `.example.com` suffix)
- * - `example.com.evil.net` → false (right-anchored match only)
+ * - `*.`  — matches exactly one subdomain level below the base domain.
+ * - `**.` — matches one or more subdomain levels below the base domain.
+ *
+ * Neither wildcard matches the base domain itself.
+ *
+ * Examples (with allowlist `['example.com', '*.example.com', '**.example.com']`):
+ * - `example.com`              → true (exact)
+ * - `api.example.com`          → true (one wildcard level, also `**.`)
+ * - `a.b.example.com`          → true (`**.` only)
+ * - `www.example.com.evil.net` → false
+ * - `notexample.com`           → false
+ *
+ * With allowlist `['example.com']` alone, `api.example.com` is rejected.
  */
 export function isHostInAllowlist(
   hostname: string,
@@ -196,7 +212,38 @@ export function isHostInAllowlist(
     if (!normalized) {
       continue;
     }
-    if (host === normalized || host.endsWith(`.${normalized}`)) {
+    if (normalized.startsWith('**.')) {
+      const base = normalized.slice(3);
+      // One or more subdomain levels. Require the matched prefix to be
+      // non-empty and to contain no empty label: reject a leading-dot host
+      // (`.base`) and any double-dot (`a..base`) by checking the prefix
+      // neither starts with nor contains a leading/trailing/double dot.
+      if (
+        base &&
+        host.length > base.length + 1 &&
+        host.endsWith(`.${base}`) &&
+        !host.slice(0, -base.length - 1).startsWith('.') &&
+        !host.slice(0, -base.length - 1).includes('..')
+      ) {
+        return true;
+      }
+      continue;
+    }
+    if (normalized.startsWith('*.')) {
+      const base = normalized.slice(2);
+      // Exactly one subdomain level: the prefix (host minus `.` + base) must
+      // be a single non-empty label — no `.`, and not empty (rejects `.base`).
+      if (
+        base &&
+        host.length > base.length + 1 &&
+        host.endsWith(`.${base}`) &&
+        !host.slice(0, -base.length - 1).includes('.')
+      ) {
+        return true;
+      }
+      continue;
+    }
+    if (host === normalized) {
       return true;
     }
   }
