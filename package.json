@@ -1,6 +1,6 @@
 {
   "name": "guarded-fetch",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "SSRF-safe HTTP(S) fetch utilities backed by undici: DNS-rebinding protection, redirect validation, header sanitization, and bounded body reads",
   "author": "Vercel",
   "license": "Apache-2.0",
