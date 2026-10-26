@@ -108,6 +108,9 @@ describe('createGuardedFetch', () => {
     'http://server.local./',
     'http://server.localhost/',
     'http://server.internal/',
+    'http://[::ffff:127.0.0.1]/',
+    'http://[::ffff:a9fe:a9fe]/',
+    'http://[64:ff9b::a9fe:a9fe]/',
     'file:///tmp/file',
   ])('rejects an unsafe literal URL %s', async (url) => {
     await expect(create()(url)).rejects.toThrow(GuardedFetchError);
@@ -126,6 +129,17 @@ describe('createGuardedFetch', () => {
       fetch(origin.replace('127.0.0.1', 'localhost')),
     ).rejects.toThrow(GuardedFetchError);
     await expect(fetch(origin.replace('http:', 'https:'))).rejects.toThrow(
+      GuardedFetchError,
+    );
+    expect(onConnection).toHaveBeenCalledTimes(1);
+  });
+
+  it('applies the trusted-origin check to native Request inputs', async () => {
+    const fetch = create({ trustedOrigins: [origin] });
+    await expect(
+      (await fetch(new Request(`${origin}/file`))).text(),
+    ).resolves.toBe('content');
+    await expect(fetch(new Request('http://127.0.0.1:1/file'))).rejects.toThrow(
       GuardedFetchError,
     );
     expect(onConnection).toHaveBeenCalledTimes(1);
