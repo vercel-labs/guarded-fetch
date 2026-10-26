@@ -111,6 +111,18 @@ function tryDecodeEmbeddedIpv4FromIpv6(v6: string): string | null {
 
   const [h0, h1, h2, h3, h4, h5, h6, h7] = hextets;
 
+  // IPv4-compatible (::/96), mapped (::ffff:0:0/96), and translated
+  // (::ffff:0:0:0/96) forms can encode private IPv4 addresses too.
+  if (
+    h0 === 0 &&
+    h1 === 0 &&
+    h2 === 0 &&
+    h3 === 0 &&
+    ((h4 === 0 && (h5 === 0 || h5 === 0xffff)) || (h4 === 0xffff && h5 === 0))
+  ) {
+    return ipv4FromHextetPair(h6 as number, h7 as number);
+  }
+
   // 6to4 — RFC 3056: 2002:<ipv4-high>:<ipv4-low>:...
   if (h0 === 0x2002) {
     return ipv4FromHextetPair(h1 as number, h2 as number);
@@ -177,6 +189,12 @@ function isUnsafeIpv6Address(v6: string): boolean {
 
   // 2001:db8::/32 — documentation
   if (/^2001:0?db8(?::|$)/i.test(lower)) {
+    return true;
+  }
+
+  // 3fff::/20 — RFC 9637 documentation range.
+  const hextets = expandIpv6Hextets(v6);
+  if (hextets?.[0] === 0x3fff && ((hextets[1] ?? 0) & 0xf000) === 0) {
     return true;
   }
 

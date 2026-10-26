@@ -1,4 +1,5 @@
 import dns from 'node:dns';
+import net from 'node:net';
 
 import {
   OPAQUE_ERROR_MESSAGE,
@@ -38,8 +39,8 @@ type LookupCallback = (
  *
  * The returned function:
  * - Delegates the actual resolution to Node's `dns.lookup`.
- * - In single-result mode (`all` unset/false), validates the one returned IP.
- * - In `all: true` mode, validates **every** returned IP.
+ * - Always resolves and validates **every** returned IP before connecting.
+ * - Returns one address or the whole list, matching the connector's `all` option.
  * - On any unsafe IP, invokes the callback with a {@link GuardedFetchError}
  *   whose `code` is `HOSTNAME_UNSAFE`. The socket `connect` then fails.
  *
@@ -96,35 +97,32 @@ export function createGuardedLookup(
   };
 
   return function guardedLookup(hostname, opts, callback) {
-    dns.lookup(
-      hostname,
-      // `dns.lookup`'s overloads differ on the 2nd arg; passing through is
-      // safe because we never construct this value ourselves.
-      opts as dns.LookupOneOptions,
-      (err, address, family) => {
-        if (err) {
-          callback(err, address as string, family);
+    const lookupOptions = typeof opts === 'number' ? { family: opts } : opts;
+    dns.lookup(hostname, { ...lookupOptions, all: true }, (err, addresses) => {
+      if (err) {
+        callback(err, '');
+        return;
+      }
+
+      const first = Array.isArray(addresses) ? addresses[0] : undefined;
+      if (!first) {
+        reject(hostname, 'an invalid DNS result', callback);
+        return;
+      }
+
+      for (const entry of addresses) {
+        if (
+          (entry.family !== 4 && entry.family !== 6) ||
+          net.isIP(entry.address) !== entry.family ||
+          !isSafeIpAddress(entry.address)
+        ) {
+          reject(hostname, entry.address, callback);
           return;
         }
+      }
 
-        if (Array.isArray(address)) {
-          for (const entry of address) {
-            if (!isSafeIpAddress(entry.address)) {
-              reject(hostname, entry.address, callback);
-              return;
-            }
-          }
-          callback(null, address);
-          return;
-        }
-
-        if (typeof address === 'string' && !isSafeIpAddress(address)) {
-          reject(hostname, address, callback);
-          return;
-        }
-
-        callback(null, address as string, family);
-      },
-    );
+      if (lookupOptions?.all) callback(null, addresses);
+      else callback(null, first.address, first.family);
+    });
   };
 }

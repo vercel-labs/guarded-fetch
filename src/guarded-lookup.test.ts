@@ -92,12 +92,8 @@ describe(isSafeIpAddress, () => {
 describe(createGuardedLookup, () => {
   it('passes through when dns.lookup returns a public IPv4', async () => {
     mockDnsLookup.mockImplementationOnce(
-      (
-        _host,
-        _opts,
-        cb: (err: unknown, addr: string, family: number) => void,
-      ) => {
-        cb(null, '8.8.8.8', 4);
+      (_host, _opts, cb: (err: unknown, addr: dns.LookupAddress[]) => void) => {
+        cb(null, [{ address: '8.8.8.8', family: 4 }]);
       },
     );
     const lookup = createGuardedLookup();
@@ -109,12 +105,8 @@ describe(createGuardedLookup, () => {
 
   it('rejects with HOSTNAME_UNSAFE when dns.lookup returns a private IP', async () => {
     mockDnsLookup.mockImplementationOnce(
-      (
-        _host,
-        _opts,
-        cb: (err: unknown, addr: string, family: number) => void,
-      ) => {
-        cb(null, '10.0.0.1', 4);
+      (_host, _opts, cb: (err: unknown, addr: dns.LookupAddress[]) => void) => {
+        cb(null, [{ address: '10.0.0.1', family: 4 }]);
       },
     );
     const lookup = createGuardedLookup();
@@ -136,12 +128,8 @@ describe(createGuardedLookup, () => {
     // preflight. By the time the socket connects, the attacker's server
     // returned 169.254.169.254. The safe lookup catches this.
     mockDnsLookup.mockImplementationOnce(
-      (
-        _host,
-        _opts,
-        cb: (err: unknown, addr: string, family: number) => void,
-      ) => {
-        cb(null, '169.254.169.254', 4);
+      (_host, _opts, cb: (err: unknown, addr: dns.LookupAddress[]) => void) => {
+        cb(null, [{ address: '169.254.169.254', family: 4 }]);
       },
     );
     const lookup = createGuardedLookup();
@@ -205,12 +193,8 @@ describe(createGuardedLookup, () => {
 
   it('opaqueErrors: true produces a generic message while preserving code', async () => {
     mockDnsLookup.mockImplementationOnce(
-      (
-        _host,
-        _opts,
-        cb: (err: unknown, addr: string, family: number) => void,
-      ) => {
-        cb(null, '169.254.169.254', 4);
+      (_host, _opts, cb: (err: unknown, addr: dns.LookupAddress[]) => void) => {
+        cb(null, [{ address: '169.254.169.254', family: 4 }]);
       },
     );
     const lookup = createGuardedLookup({ opaqueErrors: true });

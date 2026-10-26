@@ -14,6 +14,10 @@ dependencies (`undici`, `ipaddr.js`). Node ≥ 20.19.
 
 ## Getting started
 
+Connection-time validation checks every returned DNS address, including when
+the connector requests only one. Empty results and inconsistent address families
+are rejected before a socket can be opened.
+
 ```bash
 npm install guarded-fetch
 ```
