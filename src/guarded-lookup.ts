@@ -72,13 +72,14 @@ export function createGuardedLookup(
 
   const reject = (
     hostname: string,
-    address: string,
+    message: string,
+    subReason: HostnameUnsafeSubReason,
     cb: LookupCallback,
   ): void => {
     recordUrlBlocked(
       GuardedFetchErrorCode.HOSTNAME_UNSAFE,
       hostname.toLowerCase(),
-      HostnameUnsafeSubReason.CONNECT_TIME_IP_REJECTED,
+      subReason,
     );
     // We pass a `GuardedFetchError` up through the `dns.lookup` callback; this
     // causes the socket `connect` to fail and the error to bubble up through
@@ -88,9 +89,7 @@ export function createGuardedLookup(
     // string — doing so would shadow the GuardedFetchErrorCode on the class.
     const err = new GuardedFetchError(
       GuardedFetchErrorCode.HOSTNAME_UNSAFE,
-      opaqueErrors
-        ? OPAQUE_ERROR_MESSAGE
-        : `Refusing to connect to ${address}: private, loopback, or link-local address.`,
+      opaqueErrors ? OPAQUE_ERROR_MESSAGE : message,
       { hostname },
     );
     cb(err as unknown as NodeJS.ErrnoException, '', 0);
@@ -106,23 +105,44 @@ export function createGuardedLookup(
 
       const first = Array.isArray(addresses) ? addresses[0] : undefined;
       if (!first) {
-        reject(hostname, 'an invalid DNS result', callback);
+        reject(
+          hostname,
+          `Refusing to connect to "${hostname}": DNS returned no addresses.`,
+          HostnameUnsafeSubReason.DNS_RESOLUTION_FAILED,
+          callback,
+        );
         return;
       }
 
       for (const entry of addresses) {
         if (
           (entry.family !== 4 && entry.family !== 6) ||
-          net.isIP(entry.address) !== entry.family ||
-          !isSafeIpAddress(entry.address)
+          net.isIP(entry.address) !== entry.family
         ) {
-          reject(hostname, entry.address, callback);
+          reject(
+            hostname,
+            `Refusing to connect to "${hostname}": DNS returned a malformed address.`,
+            HostnameUnsafeSubReason.DNS_RESOLUTION_FAILED,
+            callback,
+          );
+          return;
+        }
+        if (!isSafeIpAddress(entry.address)) {
+          reject(
+            hostname,
+            `Refusing to connect to ${entry.address}: private, loopback, or link-local address.`,
+            HostnameUnsafeSubReason.CONNECT_TIME_IP_REJECTED,
+            callback,
+          );
           return;
         }
       }
 
-      if (lookupOptions?.all) callback(null, addresses);
-      else callback(null, first.address, first.family);
+      if (lookupOptions?.all) {
+        callback(null, addresses);
+      } else {
+        callback(null, first.address, first.family);
+      }
     });
   };
 }

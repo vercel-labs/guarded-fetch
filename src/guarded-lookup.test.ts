@@ -248,19 +248,22 @@ describe(createGuardedLookup, () => {
   });
 
   it.each([
-    { addresses: [] },
+    { addresses: [], message: 'DNS returned no addresses' },
     {
       addresses: [{ address: 'not-an-ip', family: 4 }],
+      message: 'DNS returned a malformed address',
     },
     {
       addresses: [{ address: '8.8.8.8', family: 6 }],
+      message: 'DNS returned a malformed address',
     },
     {
       addresses: [{ address: '8.8.8.8', family: 0 }],
+      message: 'DNS returned a malformed address',
     },
   ])(
     'rejects empty or malformed results: $addresses',
-    async ({ addresses }) => {
+    async ({ addresses, message }) => {
       mockDnsLookup.mockImplementationOnce(
         (
           _host,
@@ -276,6 +279,12 @@ describe(createGuardedLookup, () => {
       expect((err as GuardedFetchError).code).toBe(
         GuardedFetchErrorCode.HOSTNAME_UNSAFE,
       );
+      expect((err as GuardedFetchError).message).toContain(message);
+      expect(blockedEvents).toHaveBeenCalledWith({
+        reason: GuardedFetchErrorCode.HOSTNAME_UNSAFE,
+        domain: 'example.com',
+        subReason: HostnameUnsafeSubReason.DNS_RESOLUTION_FAILED,
+      });
     },
   );
 });
