@@ -286,11 +286,11 @@ Every failure throws `GuardedFetchError` with a stable string `code`
 | `host_not_allowed`        | Host not in `allowedHosts`.                                                         | Yes        |
 | `hostname_unsafe`         | Resolved to a private/loopback/link-local address — or DNS failed (fail-closed).    | Usually    |
 | `timeout`                 | Exceeded `timeoutMs`, or the external `signal` aborted.                             | No         |
-| `too_many_redirects`      | Redirect chain exceeded `maxRedirects`.                                             | No         |
-| `redirect_not_allowed`    | The caller set `redirect: 'error'` and the server returned a redirect.              | No         |
-| `redirect_invalid`        | Redirect `Location` missing or malformed.                                           | No         |
-| `redirect_to_unsafe_host` | A redirect target failed the SSRF/protocol/host checks.                             | No         |
-| `response_too_large`      | Body exceeded `maxResponseBytes`.                                                   | No         |
+| `too_many_redirects`      | Redirect chain exceeded `maxRedirects`.                                             | Yes        |
+| `redirect_not_allowed`    | The caller set `redirect: 'error'` and the server returned a redirect.              | Yes        |
+| `redirect_invalid`        | Redirect `Location` missing or malformed.                                           | Yes        |
+| `redirect_to_unsafe_host` | A redirect target failed the SSRF/protocol/host checks.                             | Yes        |
+| `response_too_large`      | Body exceeded `maxResponseBytes`.                                                   | Yes        |
 | `network_error`           | DNS / connection / TLS / parse failure, or non-2xx with `throwOnHttpError`.         | No         |
 
 Use `isPermanentGuardedFetchError(err)` rather than hardcoding the
