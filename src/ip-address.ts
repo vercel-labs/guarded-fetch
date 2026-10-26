@@ -111,14 +111,15 @@ function tryDecodeEmbeddedIpv4FromIpv6(v6: string): string | null {
 
   const [h0, h1, h2, h3, h4, h5, h6, h7] = hextets;
 
-  // IPv4-compatible (::/96), mapped (::ffff:0:0/96), and translated
-  // (::ffff:0:0:0/96) forms can encode private IPv4 addresses too.
+  // IPv4-mapped — RFC 4291: ::ffff:<ipv4>, in any spelling (expanded,
+  // dotted, or hex).
   if (
     h0 === 0 &&
     h1 === 0 &&
     h2 === 0 &&
     h3 === 0 &&
-    ((h4 === 0 && (h5 === 0 || h5 === 0xffff)) || (h4 === 0xffff && h5 === 0))
+    h4 === 0 &&
+    h5 === 0xffff
   ) {
     return ipv4FromHextetPair(h6 as number, h7 as number);
   }
@@ -146,8 +147,9 @@ function tryDecodeEmbeddedIpv4FromIpv6(v6: string): string | null {
 /**
  * IPv6 ranges checked explicitly: unique local `fc00::/7`, link-local
  * `fe80::/10`, deprecated site-local `fec0::/10`, multicast `ff00::/8`,
- * documentation `2001:db8::/32`, and the NAT64 local-use prefix
- * `64:ff9b:1::/48`.
+ * documentation `2001:db8::/32` and `3fff::/20`, the NAT64 local-use prefix
+ * `64:ff9b:1::/48`, IPv4-compatible `::/96`, and IPv4-translated
+ * `::ffff:0:0:0/96`.
  */
 function isUnsafeIpv6Address(v6: string): boolean {
   const lower = normalizeIpv6Literal(v6);
@@ -192,9 +194,24 @@ function isUnsafeIpv6Address(v6: string): boolean {
     return true;
   }
 
-  // 3fff::/20 — RFC 9637 documentation range.
   const hextets = expandIpv6Hextets(v6);
+
+  // 3fff::/20 — RFC 9637 documentation range.
   if (hextets?.[0] === 0x3fff && ((hextets[1] ?? 0) & 0xf000) === 0) {
+    return true;
+  }
+
+  // ::/96 IPv4-compatible (deprecated, RFC 4291 §2.5.5.1) and
+  // ::ffff:0:0:0/96 IPv4-translated (RFC 2765 SIIT). Neither is a routable
+  // destination; both only make sense to a local stack or translator, which
+  // may forward to whatever IPv4 sits in the low bits. Reject the ranges
+  // outright rather than decoding, so a public-looking embedded IPv4 cannot
+  // unlock them.
+  if (
+    hextets?.slice(0, 4).every((h) => h === 0) &&
+    ((hextets[4] === 0 && hextets[5] === 0) ||
+      (hextets[4] === 0xffff && hextets[5] === 0))
+  ) {
     return true;
   }
 

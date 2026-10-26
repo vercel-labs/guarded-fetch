@@ -85,10 +85,7 @@ describe(isAddressUnsafeForServerSideFetch, () => {
     ['2002:0a00:0001::', '6to4 RFC1918'],
     ['64:ff9b::a9fe:a9fe', 'NAT64 metadata'],
     ['64:ff9b::7f00:0001', 'NAT64 loopback'],
-    ['::7f00:1', 'IPv4-compatible loopback'],
-    ['::a9fe:a9fe', 'IPv4-compatible metadata'],
     ['0:0:0:0:0:ffff:7f00:1', 'expanded mapped loopback'],
-    ['::ffff:0:7f00:1', 'translated loopback'],
   ])('blocks embedded IPv4 in IPv6 encodings: %s (%s)', (address: string) => {
     expect(isAddressUnsafeForServerSideFetch(address)).toBe(true);
     expect(isSafeIpAddress(address)).toBe(false);
@@ -97,13 +94,27 @@ describe(isAddressUnsafeForServerSideFetch, () => {
   it.each([
     ['2002:0808:0808::', '6to4 public'],
     ['64:ff9b::0808:0808', 'NAT64 public'],
-    ['::808:808', 'IPv4-compatible public'],
-    ['::ffff:0:808:808', 'translated public'],
   ])(
     'allows public embedded IPv4 in IPv6 encodings: %s (%s)',
     (address: string) => {
       expect(isAddressUnsafeForServerSideFetch(address)).toBe(false);
       expect(isSafeIpAddress(address)).toBe(true);
+    },
+  );
+
+  // Deprecated IPv4-compatible and SIIT-translated forms are rejected as whole
+  // ranges, including when the embedded IPv4 is public.
+  it.each([
+    ['::7f00:1', 'IPv4-compatible loopback'],
+    ['::a9fe:a9fe', 'IPv4-compatible metadata'],
+    ['::808:808', 'IPv4-compatible public'],
+    ['::ffff:0:7f00:1', 'translated loopback'],
+    ['::ffff:0:808:808', 'translated public'],
+  ])(
+    'blocks IPv4-compatible and translated ranges: %s (%s)',
+    (address: string) => {
+      expect(isAddressUnsafeForServerSideFetch(address)).toBe(true);
+      expect(isSafeIpAddress(address)).toBe(false);
     },
   );
 
