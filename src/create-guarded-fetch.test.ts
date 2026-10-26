@@ -47,7 +47,9 @@ beforeEach(async () => {
       return;
     }
     const chunks: Buffer[] = [];
-    for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    for await (const chunk of request) {
+      chunks.push(Buffer.from(chunk));
+    }
     response.end(chunks.length > 0 ? Buffer.concat(chunks) : 'content');
   });
   server.on('connection', onConnection);
@@ -56,8 +58,9 @@ beforeEach(async () => {
     server.listen(0, '127.0.0.1', resolve);
   });
   const address = server.address();
-  if (address === null || typeof address === 'string')
+  if (address === null || typeof address === 'string') {
     throw new Error('No TCP listener');
+  }
   origin = `http://127.0.0.1:${address.port}`;
 });
 
@@ -228,7 +231,9 @@ describe('createGuardedFetch', () => {
     const response = await fetch(`${origin}/stream`, {
       signal: controller.signal,
     });
-    if (!response.body) throw new Error('Missing streaming body');
+    if (!response.body) {
+      throw new Error('Missing streaming body');
+    }
     const reader = response.body.getReader();
     expect((await reader.read()).done).toBe(false);
     const pendingRead = reader.read();

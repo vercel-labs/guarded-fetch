@@ -135,7 +135,9 @@ export function createGuardedFetch({
 function validateTargetUrl(rawUrl: string): void {
   const url = new URL(rawUrl);
   // Data URLs contain inline bytes and never open a network connection.
-  if (url.protocol === 'data:') return;
+  if (url.protocol === 'data:') {
+    return;
+  }
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     recordUrlBlocked(GuardedFetchErrorCode.PROTOCOL_NOT_ALLOWED, url.hostname);
     throw new GuardedFetchError(
