@@ -43,17 +43,25 @@ export interface GuardedFetchOptions
   /**
    * Whether to follow HTTP redirects. Every hop is independently validated
    * with the same protocol, allowlist, and SSRF checks as the original URL.
+   * Ignored when `redirect` is set.
    *
    * @default true
    */
   followRedirects?: boolean;
 
-  /** Standard fetch redirect policy. Overrides `followRedirects` when set. */
+  /**
+   * Standard fetch redirect policy. `'follow'` validates every hop,
+   * `'manual'` returns the 3xx response as-is, and `'error'` throws a
+   * {@link GuardedFetchError} with code `REDIRECT_NOT_ALLOWED`. Overrides
+   * `followRedirects` when set.
+   *
+   * @default 'follow' (or `'manual'` when `followRedirects: false`)
+   */
   redirect?: RedirectPolicy;
 
   /**
-   * Maximum number of redirect hops. Has no effect when
-   * `followRedirects: false`.
+   * Maximum number of redirect hops. Only applies when redirects are
+   * followed (`redirect: 'follow'`, the default).
    *
    * @default 5
    */
