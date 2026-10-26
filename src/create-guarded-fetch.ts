@@ -1,5 +1,3 @@
-import net from 'node:net';
-
 import {
   Agent,
   FormData as UndiciFormData,
@@ -9,8 +7,8 @@ import {
 
 import { GuardedFetchError, GuardedFetchErrorCode } from './errors';
 import { createGuardedDispatcher } from './guarded-dispatcher';
-import { isSafeIpAddress } from './ip-address';
-import { HostnameUnsafeSubReason, recordUrlBlocked } from './url-blocked';
+import { classifyHostnameWithoutDns } from './hostname-safety';
+import { recordUrlBlocked } from './url-blocked';
 
 export type CreateGuardedFetchOptions = {
   /**
@@ -147,23 +145,16 @@ function validateTargetUrl(rawUrl: string): void {
     );
   }
 
-  const host = url.hostname
-    .toLowerCase()
-    .replace(/^\[|\]$/g, '')
-    .replace(/\.+$/, '');
-  const subReason =
-    host === 'localhost' || host.endsWith('.localhost')
-      ? HostnameUnsafeSubReason.LOCALHOST
-      : host === 'local' ||
-          host.endsWith('.local') ||
-          host === 'internal' ||
-          host.endsWith('.internal')
-        ? HostnameUnsafeSubReason.LOCAL_DOMAIN
-        : net.isIP(host) && !isSafeIpAddress(host)
-          ? HostnameUnsafeSubReason.IP_LITERAL_UNSAFE
-          : undefined;
-  if (subReason) {
-    recordUrlBlocked(GuardedFetchErrorCode.HOSTNAME_UNSAFE, host, subReason);
+  // Name and IP-literal checks only; resolved addresses are validated by the
+  // connector's lookup.
+  const result = classifyHostnameWithoutDns(url.hostname);
+  if (result?.safe === false) {
+    const host = url.hostname.toLowerCase();
+    recordUrlBlocked(
+      GuardedFetchErrorCode.HOSTNAME_UNSAFE,
+      host,
+      result.subReason,
+    );
     throw new GuardedFetchError(
       GuardedFetchErrorCode.HOSTNAME_UNSAFE,
       `Refusing to connect to "${host}": private, loopback, or local address.`,

@@ -238,8 +238,8 @@ Requests are refused when the hostname resolves to (or literally is) any of:
 - CGNAT (`100.64.0.0/10`) — note this covers Tailscale-style addresses
 - IPv6 forms that embed any of the above (IPv4-mapped, 6to4, NAT64
   `64:ff9b::/96`), plus the NAT64 local-use prefix `64:ff9b:1::/48` in full
-- `localhost`, `*.localhost`, and `*.local` — blocked by name, regardless
-  of what DNS says
+- `localhost`, `*.localhost`, `*.local`, and `*.internal` (trailing dots
+  ignored) — blocked by name, regardless of what DNS says
 
 ### Headers that are stripped
 
@@ -433,8 +433,8 @@ preserving `err.code` for your internal logs.
   rather than surfacing a retryable network error.
 - **One unsafe DNS record blocks the whole host**, even alongside public
   records (split-horizon DNS, stray internal records).
-- **CGNAT and `*.local` are always unsafe**, which can reject legitimate
-  Tailscale-style or mDNS endpoints.
+- **CGNAT, `*.local`, and `*.internal` are always unsafe**, which can reject
+  legitimate Tailscale-style, mDNS, or private-zone endpoints.
 - **Header stripping is silent** — see
   [the FAQ entry](#why-did-my-request-go-through-but-the-destination-returned-401404).
 - **Credential stripping on cross-origin redirects is not configurable** —
