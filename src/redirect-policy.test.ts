@@ -78,4 +78,50 @@ describe('standard redirect policies', () => {
       });
     }
   });
+
+  it('keeps body-describing headers on a cross-origin 307 that preserves the body', async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(null, {
+          status: 307,
+          headers: { location: 'https://8.8.8.8/next' },
+        }),
+      )
+      .mockResolvedValueOnce(new Response('ok'));
+    await guardedFetch(start, {
+      fetch,
+      method: 'POST',
+      body: '{"a":1}',
+      headers: {
+        accept: 'application/json',
+        'content-type': 'application/json',
+        'x-api-key': 'synthetic',
+      },
+    });
+    const init = fetch.mock.calls[1]?.[1];
+    expect(init.method).toBe('POST');
+    expect(init.body).toBe('{"a":1}');
+    expect(Object.fromEntries(init.headers)).toEqual({
+      accept: 'application/json',
+      'content-type': 'application/json',
+    });
+  });
+
+  it('keeps every caller header on a same-origin redirect', async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(null, { status: 307, headers: { location: '/next' } }),
+      )
+      .mockResolvedValueOnce(new Response('ok'));
+    const headers = {
+      authorization: 'synthetic',
+      'x-api-key': 'synthetic',
+      'user-agent': 'test-agent',
+    };
+    await guardedFetch(start, { fetch, headers });
+    const init = fetch.mock.calls[1]?.[1];
+    expect(Object.fromEntries(init.headers)).toEqual(headers);
+  });
 });

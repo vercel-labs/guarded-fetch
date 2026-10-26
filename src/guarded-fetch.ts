@@ -460,14 +460,12 @@ async function followChain(params: {
       currentHeaders = dropContentHeaders(currentHeaders);
     }
 
-    // Custom credential names cannot be identified reliably. Preserve only
-    // the user-agent when moving to a different origin, and never reattach
-    // dropped credentials if the redirect chain later returns to the origin.
+    // Custom credential names cannot be identified reliably. Keep only
+    // headers that describe the request rather than authenticate it when
+    // moving to a different origin, and never reattach dropped credentials if
+    // the redirect chain later returns to the origin.
     if (nextUrl.origin !== currentUrl.origin) {
-      const userAgent = currentHeaders.get('user-agent');
-      currentHeaders = new Headers(
-        userAgent === null ? undefined : { 'user-agent': userAgent },
-      );
+      currentHeaders = keepCrossOriginHeaders(currentHeaders);
     }
 
     currentUrl = nextUrl;
@@ -633,6 +631,31 @@ function dropContentHeaders(headers: Headers): Headers {
       return;
     }
     out.append(name, value);
+  });
+  return out;
+}
+
+/**
+ * Headers that survive a cross-origin redirect. They describe the request and
+ * its body, never the caller's identity, so the next origin can still parse a
+ * 307/308 body. Everything else — including custom API-key headers — is
+ * dropped.
+ */
+const CROSS_ORIGIN_REDIRECT_HEADERS: ReadonlySet<string> = new Set([
+  'accept',
+  'accept-language',
+  'content-encoding',
+  'content-language',
+  'content-type',
+  'user-agent',
+]);
+
+function keepCrossOriginHeaders(headers: Headers): Headers {
+  const out = new Headers();
+  headers.forEach((value, name) => {
+    if (CROSS_ORIGIN_REDIRECT_HEADERS.has(name.toLowerCase())) {
+      out.append(name, value);
+    }
   });
   return out;
 }
