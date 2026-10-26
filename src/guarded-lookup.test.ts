@@ -204,4 +204,78 @@ describe(createGuardedLookup, () => {
     expect(safeErr.code).toBe(GuardedFetchErrorCode.HOSTNAME_UNSAFE);
     expect(safeErr.message).not.toContain('169.254.169.254');
   });
+
+  it('requests every address even when the connector asks for one, and rejects a private secondary', async () => {
+    mockDnsLookup.mockImplementationOnce(
+      (_host, _opts, cb: (err: unknown, addr: dns.LookupAddress[]) => void) => {
+        cb(null, [
+          { address: '8.8.8.8', family: 4 },
+          { address: '127.0.0.1', family: 4 },
+        ]);
+      },
+    );
+    const lookup = createGuardedLookup();
+    const { err } = await callLookup(lookup, 'files.example.com', {});
+    expect((err as GuardedFetchError).code).toBe(
+      GuardedFetchErrorCode.HOSTNAME_UNSAFE,
+    );
+    expect(mockDnsLookup).toHaveBeenCalledWith(
+      'files.example.com',
+      { all: true },
+      expect.any(Function),
+    );
+  });
+
+  it('preserves lookup settings and the single-result callback shape', async () => {
+    mockDnsLookup.mockImplementationOnce(
+      (_host, _opts, cb: (err: unknown, addr: dns.LookupAddress[]) => void) => {
+        cb(null, [{ address: '8.8.8.8', family: 4 }]);
+      },
+    );
+    const lookup = createGuardedLookup();
+    const { err, addr, family } = await callLookup(lookup, 'example.com', {
+      family: 4,
+      hints: dns.ADDRCONFIG,
+    });
+    expect(err).toBeNull();
+    expect(addr).toBe('8.8.8.8');
+    expect(family).toBe(4);
+    expect(mockDnsLookup).toHaveBeenCalledWith(
+      'example.com',
+      { family: 4, hints: dns.ADDRCONFIG, all: true },
+      expect.any(Function),
+    );
+  });
+
+  it.each([
+    { addresses: [] },
+    {
+      addresses: [{ address: 'not-an-ip', family: 4 }],
+    },
+    {
+      addresses: [{ address: '8.8.8.8', family: 6 }],
+    },
+    {
+      addresses: [{ address: '8.8.8.8', family: 0 }],
+    },
+  ])(
+    'rejects empty or malformed results: $addresses',
+    async ({ addresses }) => {
+      mockDnsLookup.mockImplementationOnce(
+        (
+          _host,
+          _opts,
+          cb: (err: unknown, addr: dns.LookupAddress[]) => void,
+        ) => {
+          cb(null, addresses);
+        },
+      );
+      const lookup = createGuardedLookup();
+      const { err } = await callLookup(lookup, 'example.com', {});
+      expect(err).toBeInstanceOf(GuardedFetchError);
+      expect((err as GuardedFetchError).code).toBe(
+        GuardedFetchErrorCode.HOSTNAME_UNSAFE,
+      );
+    },
+  );
 });
