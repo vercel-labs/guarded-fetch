@@ -14,10 +14,6 @@ dependencies (`undici`, `ipaddr.js`). Node ≥ 20.19.
 
 ## Getting started
 
-Connection-time validation checks every returned DNS address, including when
-the connector requests only one. Empty results and inconsistent address families
-are rejected before a socket can be opened.
-
 ```bash
 npm install guarded-fetch
 ```
@@ -174,7 +170,7 @@ protected against:
 | DNS rebinding (TTL=0 flip between check and connect)                                        | IP re-validated inside the socket connect via a pinned undici lookup.       |
 | Multi-record DNS races (one public + one private record)                                    | Rejected if _any_ resolved A/AAAA record is unsafe.                         |
 | Private IPv4 hidden in IPv6 literals (`::ffff:`, 6to4 `2002::/16`, NAT64 `64:ff9b::/96`)    | Embedded IPv4 is decoded and classified with the same rules as native IPv4. |
-| NAT64 translation to private IPv4 via the local-use prefix (`64:ff9b:1::/48`)               | Whole range rejected — it addresses a local translator, never a real host.  |
+| Translation to private IPv4 via `64:ff9b:1::/48`, `::/96`, or `::ffff:0:0:0/96`             | Whole range rejected — it addresses a local translator, never a real host.  |
 | Redirect to an internal host after an initial safe response                                 | Manual redirect following; every hop re-runs all checks.                    |
 | Infinite / abusive redirect chains                                                          | Hop cap (`maxRedirects`, default 5).                                        |
 | Cloud-credential theft via metadata headers (`Metadata-Flavor`, `X-aws-ec2-metadata-token`) | Header stripped.                                                            |
@@ -193,8 +189,11 @@ Requests are refused when the hostname resolves to (or literally is) any of:
 - Private ranges (`10/8`, `172.16/12`, `192.168/16`, IPv6 ULA `fc00::/7`)
 - Link-local — where cloud metadata lives (`169.254.0.0/16`, `fe80::/10`)
 - CGNAT (`100.64.0.0/10`) — note this covers Tailscale-style addresses
+- Documentation ranges (`2001:db8::/32`, `3fff::/20`)
 - IPv6 forms that embed any of the above (IPv4-mapped, 6to4, NAT64
-  `64:ff9b::/96`), plus the NAT64 local-use prefix `64:ff9b:1::/48` in full
+  `64:ff9b::/96`), plus these ranges in full: the NAT64 local-use prefix
+  `64:ff9b:1::/48`, IPv4-compatible `::/96`, and IPv4-translated
+  `::ffff:0:0:0/96`
 - `localhost`, `*.localhost`, and `*.local` — blocked by name, regardless
   of what DNS says
 
@@ -223,7 +222,10 @@ covers:
    the same resolution call the socket connects with**. A separate
    check-then-fetch sequence leaves a window where an attacker's DNS server
    returns a public IP for the check and `169.254.169.254` for the
-   connection; this closes it.
+   connection; this closes it. The lookup always asks for every A/AAAA
+   record — even when the connector wants only one — and rejects the host if
+   any record is unsafe, the answer is empty, or an address does not match
+   its reported family.
 
 Layer 2 is on by default via the shared dispatcher; injected `fetch`
 implementations must be undici-compatible for it to stay active. Pass
