@@ -93,9 +93,9 @@ function ipv4FromHextetPair(hi: number, lo: number): string {
 }
 
 /**
- * Decodes IPv4 addresses embedded in 6to4 (`2002::/16`) and the NAT64
- * well-known prefix (`64:ff9b::/96`) so they can be checked with the same
- * IPv4 classifier as `::ffff:` mapped forms.
+ * Decodes IPv4 addresses embedded in IPv4-mapped (`::ffff:0:0/96`), 6to4
+ * (`2002::/16`), and NAT64 well-known prefix (`64:ff9b::/96`) literals so
+ * they can be checked with the same IPv4 classifier as native IPv4.
  *
  * The RFC 8215 local-use prefix `64:ff9b:1::/48` is not decoded here — it is
  * rejected wholesale by {@link isUnsafeIpv6Address}. Its translation-prefix
@@ -233,25 +233,6 @@ export function isAddressUnsafeForServerSideFetch(address: string): boolean {
 
   if (net.isIP(address) === 4) {
     return isUnsafeIpv4Address(address);
-  }
-
-  const lower = address.toLowerCase();
-
-  const dottedMappedIpv4 = lower.match(
-    /^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/,
-  );
-  if (dottedMappedIpv4) {
-    return isUnsafeIpv4Address(dottedMappedIpv4[1] as string);
-  }
-
-  const hexMappedIpv4 = lower.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
-  if (hexMappedIpv4) {
-    const hi = Number.parseInt(hexMappedIpv4[1] ?? '0', 16);
-    const lo = Number.parseInt(hexMappedIpv4[2] ?? '0', 16);
-    const v4 = `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${
-      lo & 0xff
-    }`;
-    return isUnsafeIpv4Address(v4);
   }
 
   if (net.isIP(address) === 6) {
