@@ -1,6 +1,7 @@
 import dns from 'node:dns';
 import { createServer, type Server } from 'node:http';
 
+import { Request as UndiciRequest } from 'undici';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createGuardedFetch, type GuardedFetch } from './create-guarded-fetch';
@@ -203,6 +204,14 @@ describe('createGuardedFetch', () => {
       );
     },
   );
+
+  it('rejects a Request from another fetch implementation with a clear error', async () => {
+    const fetch = create();
+    await expect(
+      fetch(new UndiciRequest('http://files.example.com/file') as never),
+    ).rejects.toThrow(/global Request/);
+    expect(onConnection).not.toHaveBeenCalled();
+  });
 
   it('does not accept a dispatcher override', async () => {
     mockPrivateDns();

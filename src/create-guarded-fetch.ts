@@ -58,6 +58,13 @@ export function createGuardedFetch({
   const guardedFetch: typeof globalThis.fetch = async (input, init) => {
     // Normalize native Request objects before crossing into npm Undici, whose
     // Request class has a different brand from Node's built-in Request.
+    if (isForeignRequest(input)) {
+      // `new Request()` would stringify it to "[object Request]" and fail
+      // with an unrelated URL parse error.
+      throw new TypeError(
+        'createGuardedFetch accepts a string, URL, or global Request; got a Request from another fetch implementation (e.g. the undici package).',
+      );
+    }
     const request =
       typeof input === 'string' || input instanceof URL
         ? undefined
@@ -129,6 +136,18 @@ export function createGuardedFetch({
       ]).then(() => undefined));
     },
   });
+}
+
+/** A Request-shaped object that is not Node's global `Request`. */
+function isForeignRequest(input: unknown): boolean {
+  return (
+    typeof input === 'object' &&
+    input !== null &&
+    !(input instanceof Request) &&
+    !(input instanceof URL) &&
+    typeof (input as { url?: unknown }).url === 'string' &&
+    typeof (input as { method?: unknown }).method === 'string'
+  );
 }
 
 /** URL-only checks. DNS validation belongs to the connection's lookup. */
