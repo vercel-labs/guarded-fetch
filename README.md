@@ -49,6 +49,53 @@ try {
 }
 ```
 
+## Fetch-compatible SDK transport
+
+Use `createGuardedFetch()` when an SDK accepts a standard `fetch` function and
+owns request headers, redirect validation, and response limits:
+
+```ts
+import { createGuardedFetch } from 'guarded-fetch';
+
+const fetch = createGuardedFetch();
+try {
+  const response = await fetch('https://example.com/file', {
+    redirect: 'manual',
+  });
+  // Consume or cancel the response before closing the transport.
+  console.log(await response.text());
+} finally {
+  await fetch.close();
+}
+```
+
+The factory accepts native `Request`, `FormData`, and normal fetch options. It
+preserves authentication headers and streaming bodies, uses its own Undici
+fetch and connection pools independently of global fetch wrappers, and validates
+DNS inside the connection lookup without a separate DNS preflight. It adds no
+request timeout or response size limit; supply an abort signal and enforce body
+limits in the caller. Caller aborts remain active while reading the response.
+Inline `data:` URLs are supported without DNS or a network connection.
+
+Automatic redirects are disabled: default `follow` is treated as `error`.
+`redirect: 'manual'` returns the redirect response. The caller must validate each
+subsequent hop and strip credentials across origins. This makes the factory
+suitable for the AI SDK's redirect helpers; it does not sanitize headers itself.
+For automatic redirect and header policies, use `guardedFetch` instead.
+
+For developer-controlled private services, configure exact origins:
+
+```ts
+const fetch = createGuardedFetch({
+  trustedOrigins: ['https://models.internal:8443'],
+});
+```
+
+Only those exact scheme/hostname/port combinations bypass IP/DNS checks. Paths
+are ignored; every path on that origin is trusted. Never derive this setting
+from users, model output, provider responses, or redirect targets. Reuse the
+transport and call its idempotent `close()` after consuming all responses.
+
 ## What's on by default
 
 `guarded-fetch` has a high security bar by default. `guardedFetch(url)` call with no additional options prevents:
