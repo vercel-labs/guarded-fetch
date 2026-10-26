@@ -196,21 +196,17 @@ export async function guardedFetch(
     );
   }, timeoutMs);
 
-  const onExternalAbort = () => {
-    controller.abort(externalSignal?.reason);
-  };
-  if (externalSignal) {
-    if (externalSignal.aborted) {
-      onExternalAbort();
-    } else {
-      externalSignal.addEventListener('abort', onExternalAbort, { once: true });
-    }
-  }
+  // Keep cancellation connected after the response headers arrive. Native
+  // signal composition does not require a forwarding listener that would
+  // either leak on unread responses or be removed before a body finishes.
+  const signal = externalSignal
+    ? AbortSignal.any([controller.signal, externalSignal])
+    : controller.signal;
 
   try {
     const { url } = await withDeadline(
       assertUrlIsSafeToFetch(rawUrl, assertOptions),
-      controller.signal,
+      signal,
     );
     validatedUrl = url;
 
@@ -234,7 +230,7 @@ export async function guardedFetch(
       init: rest,
       fetchImpl,
       dispatcher,
-      signal: controller.signal,
+      signal,
       followRedirects,
       maxRedirects,
       assertOptions,
@@ -242,9 +238,6 @@ export async function guardedFetch(
     });
   } finally {
     clearTimeout(timer);
-    if (externalSignal) {
-      externalSignal.removeEventListener('abort', onExternalAbort);
-    }
   }
 }
 

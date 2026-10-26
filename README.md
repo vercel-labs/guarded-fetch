@@ -127,6 +127,10 @@ const data = await readBodyAsJson(response, {
 
 ## Options reference
 
+The caller's `signal` continues to cancel the returned response body after the
+headers arrive. The bare fetch timeout ends at response headers; use the JSON
+or text wrappers to enforce the deadline through body consumption.
+
 All options are optional, and standard `RequestInit` fields (`method`,
 `headers`, `body`, ...) pass through as usual — except `redirect` and
 `signal`, which are managed internally. `maxResponseBytes` and
