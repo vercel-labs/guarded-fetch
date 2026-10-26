@@ -60,7 +60,7 @@ try {
 | Connect-time IP pinning | The resolved IP is re-validated _inside_ the socket connect, so a DNS server can't swap in a private IP between the check and the connection (DNS rebinding).                    |
 | Header sanitization     | `Host`, `Cookie`, `X-Forwarded-*`, cloud-metadata headers, and other dangerous headers are silently stripped from your request.                                                  |
 | Safe redirects          | Redirects are followed manually (max 5 hops) and every hop re-runs all of the checks above.                                                                                      |
-| Credential stripping    | `Authorization` and `Cookie` are dropped when a redirect crosses origins, so tokens never leak to a different host.                                                              |
+| Credential stripping    | All caller headers except `User-Agent` are dropped when a redirect crosses origins, including custom API-key headers.                                                            |
 | Timeout attacks         | The whole request chain (including redirects) is capped at 10 seconds.                                                                                                           |
 
 Two things that always need configuration:
@@ -128,8 +128,10 @@ const data = await readBodyAsJson(response, {
 ## Options reference
 
 All options are optional, and standard `RequestInit` fields (`method`,
-`headers`, `body`, ...) pass through as usual — except `redirect` and
-`signal`, which are managed internally. `maxResponseBytes` and
+`headers`, `body`, ...) pass through as usual. The `redirect` policy is enforced
+internally: `'manual'` returns the redirect response, `'error'` rejects it, and
+`'follow'` validates every hop. An explicit `redirect` overrides `followRedirects`.
+The `signal` is combined with the internal deadline. `maxResponseBytes` and
 `throwOnHttpError` exist only on the `guardedFetchJson` / `guardedFetchText`
 wrappers.
 
@@ -153,8 +155,8 @@ wrappers.
 
 Always on, not configurable:
 
-- **Credential stripping on cross-origin redirects** — `Authorization` and
-  `Cookie` never follow a redirect to a different origin.
+- **Credential stripping on cross-origin redirects** — all caller headers
+  except `User-Agent` are dropped, including custom provider API-key headers.
 - **RFC 7231 redirect normalization** — 301/302/303 responses convert the
   method to `GET` and drop the body (307/308 preserve both).
 
@@ -163,23 +165,23 @@ Always on, not configurable:
 Every outbound attempt — the original URL and every redirect hop — is
 protected against:
 
-| Attack                                                                                      | How it's stopped                                                            |
-| ------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| SSRF to private / loopback / link-local IPs, incl. AWS/GCP metadata (`169.254.169.254`)     | Hostname is DNS-resolved and every record classified before connecting.     |
-| SSRF via non-HTTP schemes (`file:`, `ftp:`, `gopher:`, ...)                                 | Protocol allowlist: `http:`/`https:` only.                                  |
-| DNS rebinding (TTL=0 flip between check and connect)                                        | IP re-validated inside the socket connect via a pinned undici lookup.       |
-| Multi-record DNS races (one public + one private record)                                    | Rejected if _any_ resolved A/AAAA record is unsafe.                         |
-| Private IPv4 hidden in IPv6 literals (`::ffff:`, 6to4 `2002::/16`, NAT64 `64:ff9b::/96`)    | Embedded IPv4 is decoded and classified with the same rules as native IPv4. |
-| NAT64 translation to private IPv4 via the local-use prefix (`64:ff9b:1::/48`)               | Whole range rejected — it addresses a local translator, never a real host.  |
-| Redirect to an internal host after an initial safe response                                 | Manual redirect following; every hop re-runs all checks.                    |
-| Infinite / abusive redirect chains                                                          | Hop cap (`maxRedirects`, default 5).                                        |
-| Cloud-credential theft via metadata headers (`Metadata-Flavor`, `X-aws-ec2-metadata-token`) | Header stripped.                                                            |
-| Origin-IP spoofing (`X-Forwarded-*`, `Forwarded`, `Via`, `X-Real-IP`)                       | Header stripped.                                                            |
-| Virtual-host routing to internal backends via a supplied `Host` header                      | Header stripped.                                                            |
-| Session leakage via `Cookie` to a user-controlled destination                               | Header stripped (opt back in with `allowedCookie`).                         |
-| Auth-token leak on cross-origin redirect                                                    | `Authorization` and `Cookie` dropped when the redirect changes origin.      |
-| Memory exhaustion from huge responses; slow-loris bodies                                    | `maxResponseBytes` + whole-chain `timeoutMs` (use the JSON/text wrappers).  |
-| Internal-network mapping via distinguishable error messages                                 | `opaqueErrors: true` normalizes every failure message.                      |
+| Attack                                                                                      | How it's stopped                                                                 |
+| ------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| SSRF to private / loopback / link-local IPs, incl. AWS/GCP metadata (`169.254.169.254`)     | Hostname is DNS-resolved and every record classified before connecting.          |
+| SSRF via non-HTTP schemes (`file:`, `ftp:`, `gopher:`, ...)                                 | Protocol allowlist: `http:`/`https:` only.                                       |
+| DNS rebinding (TTL=0 flip between check and connect)                                        | IP re-validated inside the socket connect via a pinned undici lookup.            |
+| Multi-record DNS races (one public + one private record)                                    | Rejected if _any_ resolved A/AAAA record is unsafe.                              |
+| Private IPv4 hidden in IPv6 literals (`::ffff:`, 6to4 `2002::/16`, NAT64 `64:ff9b::/96`)    | Embedded IPv4 is decoded and classified with the same rules as native IPv4.      |
+| NAT64 translation to private IPv4 via the local-use prefix (`64:ff9b:1::/48`)               | Whole range rejected — it addresses a local translator, never a real host.       |
+| Redirect to an internal host after an initial safe response                                 | Manual redirect following; every hop re-runs all checks.                         |
+| Infinite / abusive redirect chains                                                          | Hop cap (`maxRedirects`, default 5).                                             |
+| Cloud-credential theft via metadata headers (`Metadata-Flavor`, `X-aws-ec2-metadata-token`) | Header stripped.                                                                 |
+| Origin-IP spoofing (`X-Forwarded-*`, `Forwarded`, `Via`, `X-Real-IP`)                       | Header stripped.                                                                 |
+| Virtual-host routing to internal backends via a supplied `Host` header                      | Header stripped.                                                                 |
+| Session leakage via `Cookie` to a user-controlled destination                               | Header stripped (opt back in with `allowedCookie`).                              |
+| Auth-token leak on cross-origin redirect                                                    | All caller headers except `User-Agent` dropped when the redirect changes origin. |
+| Memory exhaustion from huge responses; slow-loris bodies                                    | `maxResponseBytes` + whole-chain `timeoutMs` (use the JSON/text wrappers).       |
+| Internal-network mapping via distinguishable error messages                                 | `opaqueErrors: true` normalizes every failure message.                           |
 
 ### Blocked network destinations
 
@@ -284,6 +286,7 @@ Every failure throws `GuardedFetchError` with a stable string `code`
 | `hostname_unsafe`         | Resolved to a private/loopback/link-local address — or DNS failed (fail-closed).    | Usually    |
 | `timeout`                 | Exceeded `timeoutMs`, or the external `signal` aborted.                             | No         |
 | `too_many_redirects`      | Redirect chain exceeded `maxRedirects`.                                             | No         |
+| `redirect_not_allowed`    | The caller set `redirect: error` and the server returned a redirect.                | No         |
 | `redirect_invalid`        | Redirect `Location` missing or malformed.                                           | No         |
 | `redirect_to_unsafe_host` | A redirect target failed the SSRF/protocol/host checks.                             | No         |
 | `response_too_large`      | Body exceeded `maxResponseBytes`.                                                   | No         |

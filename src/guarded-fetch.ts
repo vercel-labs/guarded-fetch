@@ -16,7 +16,7 @@ import { recordUrlBlocked } from './url-blocked';
 
 /**
  * Subset of `RequestInit` fields we accept verbatim. We strip:
- * - `signal` / `redirect` — managed internally (timeout + manual redirect).
+ * - `signal` / `redirect` — managed internally (timeout + validated redirects).
  * - `dispatcher` — re-typed on {@link GuardedFetchOptions} to allow `null` as
  *   an explicit opt-out.
  */
@@ -27,6 +27,7 @@ type PassthroughRequestInit = Omit<
 
 type FetchBody = NonNullable<RequestInit['body']>;
 type FetchImpl = typeof globalThis.fetch;
+type RedirectPolicy = NonNullable<RequestInit['redirect']>;
 
 export interface GuardedFetchOptions
   extends PassthroughRequestInit, AssertUrlSafeOptions {
@@ -46,6 +47,9 @@ export interface GuardedFetchOptions
    * @default true
    */
   followRedirects?: boolean;
+
+  /** Standard fetch redirect policy. Overrides `followRedirects` when set. */
+  redirect?: RedirectPolicy;
 
   /**
    * Maximum number of redirect hops. Has no effect when
@@ -142,6 +146,7 @@ export async function guardedFetch(
   const {
     timeoutMs = DEFAULT_TIMEOUT_MS,
     followRedirects = true,
+    redirect = followRedirects ? 'follow' : 'manual',
     maxRedirects = DEFAULT_MAX_REDIRECTS,
     sanitizeHeaders = true,
     httpsOnly,
@@ -235,7 +240,7 @@ export async function guardedFetch(
       fetchImpl,
       dispatcher,
       signal: controller.signal,
-      followRedirects,
+      redirect,
       maxRedirects,
       assertOptions,
       opaqueErrors,
@@ -292,7 +297,7 @@ async function followChain(params: {
   fetchImpl: FetchImpl;
   dispatcher: Dispatcher | undefined;
   signal: AbortSignal;
-  followRedirects: boolean;
+  redirect: RedirectPolicy;
   maxRedirects: number;
   assertOptions: AssertUrlSafeOptions;
   opaqueErrors: boolean;
@@ -308,7 +313,7 @@ async function followChain(params: {
     fetchImpl,
     dispatcher,
     signal,
-    followRedirects,
+    redirect,
     maxRedirects,
     assertOptions,
     opaqueErrors,
@@ -331,8 +336,19 @@ async function followChain(params: {
       return response;
     }
 
-    if (!followRedirects) {
+    if (redirect === 'manual') {
       return response;
+    }
+
+    if (redirect === 'error') {
+      response.body?.cancel().catch(() => {
+        // Cancellation may race with an already closed response body.
+      });
+      throw new GuardedFetchError(
+        GuardedFetchErrorCode.REDIRECT_NOT_ALLOWED,
+        opaqueErrors ? OPAQUE_ERROR_MESSAGE : 'Redirects are not allowed.',
+        { url: currentUrl.toString(), status: response.status },
+      );
     }
 
     if (hop === maxRedirects) {
@@ -444,13 +460,14 @@ async function followChain(params: {
       currentHeaders = dropContentHeaders(currentHeaders);
     }
 
-    // Drop credentials on cross-origin redirects to avoid leaking them to
-    // attacker-controlled hosts. Cookie is treated identically to
-    // Authorization because the `allowedCookie` option opts in
-    // a `Cookie` header that must not follow a redirect off-origin.
+    // Custom credential names cannot be identified reliably. Preserve only
+    // the user-agent when moving to a different origin, and never reattach
+    // dropped credentials if the redirect chain later returns to the origin.
     if (nextUrl.origin !== currentUrl.origin) {
-      currentHeaders = stripHeader(currentHeaders, 'authorization');
-      currentHeaders = stripHeader(currentHeaders, 'cookie');
+      const userAgent = currentHeaders.get('user-agent');
+      currentHeaders = new Headers(
+        userAgent === null ? undefined : { 'user-agent': userAgent },
+      );
     }
 
     currentUrl = nextUrl;
@@ -616,17 +633,6 @@ function dropContentHeaders(headers: Headers): Headers {
       return;
     }
     out.append(name, value);
-  });
-  return out;
-}
-
-function stripHeader(headers: Headers, name: string): Headers {
-  const lower = name.toLowerCase();
-  const out = new Headers();
-  headers.forEach((value, key) => {
-    if (key.toLowerCase() !== lower) {
-      out.append(key, value);
-    }
   });
   return out;
 }
