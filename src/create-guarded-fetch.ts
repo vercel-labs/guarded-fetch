@@ -32,6 +32,13 @@ export type GuardedFetch = typeof globalThis.fetch & {
  * Automatic redirects are disabled: `follow` is treated as `error`. Use
  * `manual` with the SDK's redirect helpers to validate each hop and strip
  * credentials. This transport alone does not sanitize request headers.
+ *
+ * `data:` URLs are served inline without DNS or a socket; every other scheme
+ * except `http:`/`https:` is rejected.
+ *
+ * Errors keep fetch's shape: URL checks reject with a
+ * {@link GuardedFetchError}, while connect-time rejections surface as undici's
+ * `TypeError: fetch failed` with the `GuardedFetchError` on `.cause`.
  */
 export function createGuardedFetch({
   trustedOrigins = [],
