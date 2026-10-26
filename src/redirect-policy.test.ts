@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { isPermanentGuardedFetchError } from './errors';
+import { isPermanentGuardedFetchError, OPAQUE_ERROR_MESSAGE } from './errors';
 import { guardedFetch } from './guarded-fetch';
 
 const start = 'https://1.1.1.1/start';
@@ -34,7 +34,35 @@ describe('standard redirect policies', () => {
     expect(cancel).toHaveBeenCalledTimes(1);
   });
 
-  it('lets an explicit redirect policy override the legacy option', async () => {
+  it('uses the opaque message for rejected redirects when opaqueErrors is set', async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(null, { status: 302, headers: { location: '/next' } }),
+      );
+    const error = await guardedFetch(start, {
+      fetch,
+      redirect: 'error',
+      opaqueErrors: true,
+    }).catch((failure) => failure);
+    expect(error).toMatchObject({
+      code: 'redirect_not_allowed',
+      message: OPAQUE_ERROR_MESSAGE,
+    });
+  });
+
+  it('rejects an unknown redirect policy before sending a request', async () => {
+    const fetch = vi.fn();
+    await expect(
+      guardedFetch(start, {
+        fetch,
+        redirect: 'bogus' as never,
+      }),
+    ).rejects.toThrow(TypeError);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('lets an explicit redirect policy override followRedirects', async () => {
     const fetch = vi
       .fn()
       .mockResolvedValueOnce(

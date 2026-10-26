@@ -113,6 +113,12 @@ export const DEFAULT_TIMEOUT_MS = 10_000;
 
 const DEFAULT_MAX_REDIRECTS = 5;
 
+const REDIRECT_POLICIES: ReadonlySet<string> = new Set([
+  'follow',
+  'manual',
+  'error',
+]);
+
 /**
  * Performs an SSRF-safe HTTP(S) fetch.
  *
@@ -163,6 +169,14 @@ export async function guardedFetch(
     method,
     ...rest
   } = options;
+
+  // Mirror fetch: an unknown policy is a caller bug, not a reason to fall
+  // back to following redirects.
+  if (!REDIRECT_POLICIES.has(redirect)) {
+    throw new TypeError(
+      `Invalid redirect option "${String(redirect)}"; expected "follow", "manual", or "error".`,
+    );
+  }
 
   // IP-pinning dispatcher closes the DNS rebinding window. `null` explicitly
   // opts out.
@@ -341,7 +355,9 @@ async function followChain(params: {
     }
 
     if (redirect === 'error') {
-      response.body?.cancel().catch(() => {
+      // Nothing more is read from this connection, so cancel instead of
+      // draining — a stalled body would otherwise hold the call until timeout.
+      await response.body?.cancel().catch(() => {
         // Cancellation may race with an already closed response body.
       });
       throw new GuardedFetchError(
