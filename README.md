@@ -117,7 +117,12 @@ const data = await guardedFetchJson(vendorUrl, {
 ### Blocking Node2Shell
 
 Node2Shell (CVE-2026-111497) is a remote code execution bug in the brotli
-decoder that Node bundles. While we recommend patching , on an unpatched Node, block `br`:
+decoder that Node bundles. Your outbound requests can be exploited by
+a malicious server even if you don't explicitly pick brotli, since the response
+could be brotli compressed and Node will accept it.
+
+While we recommend patching to a safe Node version, on an unpatched Node
+you can mitigate this attack by blocking `br` encoding:
 
 ```ts
 await guardedFetch(url, { blockedEncodings: ['br'] });
