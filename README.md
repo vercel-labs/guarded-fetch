@@ -132,7 +132,7 @@ The request sends `Accept-Encoding: gzip, deflate`. A server that still
 responds with `Content-Encoding: br` is aborted before any byte reaches the
 decoder, and the call throws `response_encoding_not_allowed`.
 
-*Note that using custom fetcher will not work with this*
+_Note that using custom fetcher will not work with this_
 
 ### Size-bounded reads on an existing Response
 
