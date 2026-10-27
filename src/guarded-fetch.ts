@@ -221,9 +221,11 @@ export async function guardedFetch(
     );
   }, timeoutMs);
 
-  // Keep cancellation connected after the response headers arrive. Native
-  // signal composition does not require a forwarding listener that would
-  // either leak on unread responses or be removed before a body finishes.
+  // Combine the caller's signal with the timeout signal. The caller's abort
+  // must stay active while the body streams. A forwarding listener cannot do
+  // this: if we remove it in `finally`, the body loses the abort; if we keep
+  // it, it leaks when the body is never read. `AbortSignal.any` has no
+  // listener to remove.
   const signal = externalSignal
     ? AbortSignal.any([controller.signal, externalSignal])
     : controller.signal;
