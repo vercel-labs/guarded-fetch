@@ -221,7 +221,7 @@ export async function guardedFetch(
     );
   }, timeoutMs);
 
-  // No forwarding listener: it would be removed before the body is read.
+  // Caller abort must still cancel the body after this function returns.
   const signal = externalSignal
     ? AbortSignal.any([controller.signal, externalSignal])
     : controller.signal;
