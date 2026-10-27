@@ -1,5 +1,10 @@
 export { guardedFetch, type GuardedFetchOptions } from './guarded-fetch';
 export {
+  createGuardedFetch,
+  type CreateGuardedFetchOptions,
+  type GuardedFetch,
+} from './create-guarded-fetch';
+export {
   guardedFetchJson,
   guardedFetchText,
   type GuardedFetchBodyOptions,

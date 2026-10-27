@@ -49,6 +49,63 @@ try {
 }
 ```
 
+## Fetch-compatible SDK transport
+
+Use `createGuardedFetch()` when an SDK accepts a standard `fetch` function and
+owns request headers, redirect validation, and response limits:
+
+```ts
+import { createGuardedFetch } from 'guarded-fetch';
+
+const fetch = createGuardedFetch();
+try {
+  const response = await fetch('https://example.com/file', {
+    redirect: 'manual',
+  });
+  // Consume or cancel the response before closing the transport.
+  console.log(await response.text());
+} finally {
+  await fetch.close();
+}
+```
+
+The factory accepts native `Request`, `FormData`, and normal fetch options,
+preserves authentication headers and streaming bodies, and uses its own undici
+fetch and connection pools independently of global fetch wrappers. Caller
+aborts remain active while reading the response. Inline `data:` URLs are served
+without DNS or a network connection.
+
+Unlike `guardedFetch`, it leaves request policy to the caller:
+
+| Behavior                        | `guardedFetch`                     | `createGuardedFetch()`                                     |
+| ------------------------------- | ---------------------------------- | ---------------------------------------------------------- |
+| URL, IP-literal, and DNS checks | Yes (preflight + connect-time pin) | Yes (connect-time pin only)                                |
+| Redirects                       | Followed, every hop re-validated   | Not followed — `'manual'` or `'error'`                     |
+| Header sanitization             | Yes                                | No                                                         |
+| Timeout                         | `timeoutMs` (10 s default)         | None — pass a `signal`                                     |
+| Response size limit             | With the JSON/text wrappers        | None                                                       |
+| `opaqueErrors` / `onUrlBlocked` | Yes                                | No (module-level `setUrlBlockedHandler` only)              |
+| Error on a connect-time block   | `GuardedFetchError`                | `TypeError: fetch failed`, `GuardedFetchError` on `.cause` |
+
+The default `redirect: 'follow'` is treated as `'error'`. With
+`redirect: 'manual'` the 3xx response is returned, and the caller must validate
+each subsequent hop and strip credentials across origins — which is what the AI
+SDK's redirect helpers do. For automatic redirect and header policies, use
+`guardedFetch` instead.
+
+For developer-controlled private services, configure exact origins:
+
+```ts
+const fetch = createGuardedFetch({
+  trustedOrigins: ['https://models.internal:8443'],
+});
+```
+
+Only those exact scheme/hostname/port combinations bypass IP/DNS checks. Paths
+are ignored; every path on that origin is trusted. Never derive this setting
+from users, model output, provider responses, or redirect targets. Reuse the
+transport and call its idempotent `close()` after consuming all responses.
+
 ## What's on by default
 
 `guarded-fetch` has a high security bar by default. `guardedFetch(url)` call with no additional options prevents:
@@ -191,8 +248,8 @@ Requests are refused when the hostname resolves to (or literally is) any of:
 - CGNAT (`100.64.0.0/10`) — note this covers Tailscale-style addresses
 - IPv6 forms that embed any of the above (IPv4-mapped, 6to4, NAT64
   `64:ff9b::/96`), plus the NAT64 local-use prefix `64:ff9b:1::/48` in full
-- `localhost`, `*.localhost`, and `*.local` — blocked by name, regardless
-  of what DNS says
+- `localhost`, `*.localhost`, `*.local`, and `*.internal` (trailing dots
+  ignored) — blocked by name, regardless of what DNS says
 
 ### Headers that are stripped
 
@@ -251,25 +308,26 @@ net.connect({ host, port, lookup: createGuardedLookup() });
 
 ## API surface
 
-| Export                                       | Purpose                                                                                                                  |
-| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `guardedFetch(url, opts?)`                   | SSRF-safe `fetch` — returns a `Response`.                                                                                |
-| `guardedFetchJson<T>(url, opts?)`            | Fetch + bounded JSON parse.                                                                                              |
-| `guardedFetchText(url, opts?)`               | Fetch + bounded UTF-8 read.                                                                                              |
-| `assertUrlIsSafeToFetch(url, opts?)`         | Pre-flight validator — no HTTP request, but does resolve DNS.                                                            |
-| `sanitizeRequestHeaders(headers)`            | Strip SSRF/proxy/cookie headers → `Headers`.                                                                             |
-| `readBodyAsJson(res, opts?)`                 | Size-bounded JSON reader for an existing `Response`.                                                                     |
-| `readBodyAsText(res, opts?)`                 | Size-bounded text reader for an existing `Response`.                                                                     |
-| `GuardedFetchError`, `GuardedFetchErrorCode` | Structured error type for every failure mode.                                                                            |
-| `isGuardedFetchError(v)`                     | Type guard resilient to duplicate module copies.                                                                         |
-| `isPermanentGuardedFetchError(v)`            | True when the failure cannot succeed on retry.                                                                           |
-| `BLOCKED_REQUEST_HEADERS`                    | The canonical header blocklist.                                                                                          |
-| `createGuardedLookup(opts?)`                 | `dns.lookup`-compatible function that validates and pins resolved IPs inline. Rebinding guard only — see the note below. |
-| `isSafeIpAddress(ip)`                        | Returns `true` for public IPv4/IPv6 addresses.                                                                           |
-| `getSharedGuardedDispatcher()`               | Lazy process-wide undici `Agent` used by default. Connection-pooled.                                                     |
-| `createGuardedDispatcher(opts?)`             | Fresh undici `Agent` with IP pinning. Caller must `.close()`.                                                            |
-| `setUrlBlockedHandler(handler)`              | Register a process-wide block-event handler.                                                                             |
-| `URL_BLOCKED_LOG_MESSAGE`                    | Suggested constant log message for block events.                                                                         |
+| Export                                       | Purpose                                                                                                                                                 |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `guardedFetch(url, opts?)`                   | SSRF-safe `fetch` — returns a `Response`.                                                                                                               |
+| `guardedFetchJson<T>(url, opts?)`            | Fetch + bounded JSON parse.                                                                                                                             |
+| `guardedFetchText(url, opts?)`               | Fetch + bounded UTF-8 read.                                                                                                                             |
+| `createGuardedFetch(opts?)`                  | Fetch-compatible transport for SDKs: connect-time SSRF checks only, no redirects, caller must `.close()`. See [above](#fetch-compatible-sdk-transport). |
+| `assertUrlIsSafeToFetch(url, opts?)`         | Pre-flight validator — no HTTP request, but does resolve DNS.                                                                                           |
+| `sanitizeRequestHeaders(headers)`            | Strip SSRF/proxy/cookie headers → `Headers`.                                                                                                            |
+| `readBodyAsJson(res, opts?)`                 | Size-bounded JSON reader for an existing `Response`.                                                                                                    |
+| `readBodyAsText(res, opts?)`                 | Size-bounded text reader for an existing `Response`.                                                                                                    |
+| `GuardedFetchError`, `GuardedFetchErrorCode` | Structured error type for every failure mode.                                                                                                           |
+| `isGuardedFetchError(v)`                     | Type guard resilient to duplicate module copies.                                                                                                        |
+| `isPermanentGuardedFetchError(v)`            | True when the failure cannot succeed on retry.                                                                                                          |
+| `BLOCKED_REQUEST_HEADERS`                    | The canonical header blocklist.                                                                                                                         |
+| `createGuardedLookup(opts?)`                 | `dns.lookup`-compatible function that validates and pins resolved IPs inline. Rebinding guard only — see the note below.                                |
+| `isSafeIpAddress(ip)`                        | Returns `true` for public IPv4/IPv6 addresses.                                                                                                          |
+| `getSharedGuardedDispatcher()`               | Lazy process-wide undici `Agent` used by default. Connection-pooled.                                                                                    |
+| `createGuardedDispatcher(opts?)`             | Fresh undici `Agent` with IP pinning. Caller must `.close()`.                                                                                           |
+| `setUrlBlockedHandler(handler)`              | Register a process-wide block-event handler.                                                                                                            |
+| `URL_BLOCKED_LOG_MESSAGE`                    | Suggested constant log message for block events.                                                                                                        |
 
 ## Error codes
 
@@ -386,8 +444,8 @@ preserving `err.code` for your internal logs.
   rather than surfacing a retryable network error.
 - **One unsafe DNS record blocks the whole host**, even alongside public
   records (split-horizon DNS, stray internal records).
-- **CGNAT and `*.local` are always unsafe**, which can reject legitimate
-  Tailscale-style or mDNS endpoints.
+- **CGNAT, `*.local`, and `*.internal` are always unsafe**, which can reject
+  legitimate Tailscale-style, mDNS, or private-zone endpoints.
 - **Header stripping is silent** — see
   [the FAQ entry](#why-did-my-request-go-through-but-the-destination-returned-401404).
 - **Credential stripping on cross-origin redirects is not configurable** —
