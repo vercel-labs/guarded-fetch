@@ -114,6 +114,20 @@ const data = await guardedFetchJson(vendorUrl, {
 });
 ```
 
+### Blocking Node2Shell
+
+Node2Shell (CVE-2026-111497) is a remote code execution bug in the brotli
+decoder that Node bundles. Fixed in Node 22.23.4, 24.22.1, and 26.12.1. Node 20
+has no fix. On an unpatched Node, block `br`:
+
+```ts
+await guardedFetch(url, { blockedEncodings: ['br'] });
+```
+
+The request sends `Accept-Encoding: gzip, deflate`. A server that still
+responds with `Content-Encoding: br` is aborted before any byte reaches the
+decoder, and the call throws `response_encoding_not_allowed`.
+
 ### Size-bounded reads on an existing Response
 
 ```ts
