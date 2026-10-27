@@ -221,21 +221,15 @@ export async function guardedFetch(
     );
   }, timeoutMs);
 
-  const onExternalAbort = () => {
-    controller.abort(externalSignal?.reason);
-  };
-  if (externalSignal) {
-    if (externalSignal.aborted) {
-      onExternalAbort();
-    } else {
-      externalSignal.addEventListener('abort', onExternalAbort, { once: true });
-    }
-  }
+  // Caller abort must still cancel the body after this function returns.
+  const signal = externalSignal
+    ? AbortSignal.any([controller.signal, externalSignal])
+    : controller.signal;
 
   try {
     const { url } = await withDeadline(
       assertUrlIsSafeToFetch(rawUrl, assertOptions),
-      controller.signal,
+      signal,
     );
     validatedUrl = url;
 
@@ -266,7 +260,7 @@ export async function guardedFetch(
       init: rest,
       fetchImpl,
       dispatcher,
-      signal: controller.signal,
+      signal,
       followRedirects,
       maxRedirects,
       assertOptions,
@@ -274,9 +268,6 @@ export async function guardedFetch(
     });
   } finally {
     clearTimeout(timer);
-    if (externalSignal) {
-      externalSignal.removeEventListener('abort', onExternalAbort);
-    }
   }
 }
 
