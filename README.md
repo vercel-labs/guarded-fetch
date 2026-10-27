@@ -114,6 +114,26 @@ const data = await guardedFetchJson(vendorUrl, {
 });
 ```
 
+### Blocking Node2Shell
+
+Node2Shell (CVE-2026-111497) is a remote code execution bug in the brotli
+decoder that Node bundles. Your outbound requests can be exploited by
+a malicious server even if you don't explicitly pick brotli, since the response
+could be brotli compressed and Node will accept it.
+
+While we recommend patching to a safe Node version, on an unpatched Node
+you can mitigate this attack by blocking `br` encoding:
+
+```ts
+await guardedFetch(url, { blockedEncodings: ['br'] });
+```
+
+The request sends `Accept-Encoding: gzip, deflate`. A server that still
+responds with `Content-Encoding: br` is aborted before any byte reaches the
+decoder, and the call throws `response_encoding_not_allowed`.
+
+_Note that using custom fetcher will not work with this_
+
 ### Size-bounded reads on an existing Response
 
 ```ts
@@ -143,6 +163,7 @@ wrappers.
 | `skipSsrfCheckForAllowedHosts` | `boolean`            | `false`                | Skip the DNS/SSRF check for hosts that matched `allowedHosts`. Only safe for hosts you fully control.                                                                                                                                                                                                                                                                                                                                                      |
 | `sanitizeHeaders`              | `boolean`            | `true`                 | Strip [dangerous request headers](#headers-that-are-stripped) before sending. Set `false` to send headers verbatim (dangerous with user input).                                                                                                                                                                                                                                                                                                            |
 | `allowedCookie`                | `string`             | _(none)_               | Explicitly send a `Cookie` header (which sanitization otherwise strips). Dropped on cross-origin redirects, like `Authorization`.                                                                                                                                                                                                                                                                                                                          |
+| `blockedEncodings`             | `string[]`           | `[]`                   | Response content codings to reject, e.g. `['br']` on Node without the fix for CVE-2026-111497. `Accept-Encoding` omits them (unless you set it) and a response that uses one throws `response_encoding_not_allowed` before any byte is decoded.                                                                                                                                                                                                            |
 | `opaqueErrors`                 | `boolean`            | `false`                | Replace every error message with one generic string so failures are indistinguishable to attackers. Error `code` is preserved.                                                                                                                                                                                                                                                                                                                             |
 | `onUrlBlocked`                 | `function`           | _(none)_               | Per-call block-event handler; overrides the module-level `setUrlBlockedHandler` for this call.                                                                                                                                                                                                                                                                                                                                                             |
 | `signal`                       | `AbortSignal`        | _(none)_               | External abort signal, combined with the internal timeout.                                                                                                                                                                                                                                                                                                                                                                                                 |
@@ -180,6 +201,7 @@ protected against:
 | Auth-token leak on cross-origin redirect                                                    | `Authorization` and `Cookie` dropped when the redirect changes origin.      |
 | Memory exhaustion from huge responses; slow-loris bodies                                    | `maxResponseBytes` + whole-chain `timeoutMs` (use the JSON/text wrappers).  |
 | Internal-network mapping via distinguishable error messages                                 | `opaqueErrors: true` normalizes every failure message.                      |
+| Brotli decoder RCE on unpatched Node (CVE-2026-111497)                                      | `blockedEncodings: ['br']` aborts `br` responses before decoding.           |
 
 ### Blocked network destinations
 
@@ -276,18 +298,19 @@ net.connect({ host, port, lookup: createGuardedLookup() });
 Every failure throws `GuardedFetchError` with a stable string `code`
 (`err.code`, also available as the `GuardedFetchErrorCode` enum):
 
-| Code                      | Meaning                                                                             | Permanent? |
-| ------------------------- | ----------------------------------------------------------------------------------- | ---------- |
-| `invalid_url`             | URL string failed to parse.                                                         | Yes        |
-| `protocol_not_allowed`    | Scheme outside the allowlist (`http:`/`https:`, or `https:` only with `httpsOnly`). | Yes        |
-| `host_not_allowed`        | Host not in `allowedHosts`.                                                         | Yes        |
-| `hostname_unsafe`         | Resolved to a private/loopback/link-local address — or DNS failed (fail-closed).    | Usually    |
-| `timeout`                 | Exceeded `timeoutMs`, or the external `signal` aborted.                             | No         |
-| `too_many_redirects`      | Redirect chain exceeded `maxRedirects`.                                             | No         |
-| `redirect_invalid`        | Redirect `Location` missing or malformed.                                           | No         |
-| `redirect_to_unsafe_host` | A redirect target failed the SSRF/protocol/host checks.                             | No         |
-| `response_too_large`      | Body exceeded `maxResponseBytes`.                                                   | No         |
-| `network_error`           | DNS / connection / TLS / parse failure, or non-2xx with `throwOnHttpError`.         | No         |
+| Code                            | Meaning                                                                             | Permanent? |
+| ------------------------------- | ----------------------------------------------------------------------------------- | ---------- |
+| `invalid_url`                   | URL string failed to parse.                                                         | Yes        |
+| `protocol_not_allowed`          | Scheme outside the allowlist (`http:`/`https:`, or `https:` only with `httpsOnly`). | Yes        |
+| `host_not_allowed`              | Host not in `allowedHosts`.                                                         | Yes        |
+| `hostname_unsafe`               | Resolved to a private/loopback/link-local address — or DNS failed (fail-closed).    | Usually    |
+| `timeout`                       | Exceeded `timeoutMs`, or the external `signal` aborted.                             | No         |
+| `too_many_redirects`            | Redirect chain exceeded `maxRedirects`.                                             | No         |
+| `redirect_invalid`              | Redirect `Location` missing or malformed.                                           | No         |
+| `redirect_to_unsafe_host`       | A redirect target failed the SSRF/protocol/host checks.                             | No         |
+| `response_too_large`            | Body exceeded `maxResponseBytes`.                                                   | No         |
+| `response_encoding_not_allowed` | Response used a `Content-Encoding` listed in `blockedEncodings`.                    | Yes        |
+| `network_error`                 | DNS / connection / TLS / parse failure, or non-2xx with `throwOnHttpError`.         | No         |
 
 Use `isPermanentGuardedFetchError(err)` rather than hardcoding the
 retryability column.

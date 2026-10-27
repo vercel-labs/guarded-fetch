@@ -442,6 +442,19 @@ describe(guardedFetch, () => {
     expect(init?.dispatcher).toBeUndefined();
   });
 
+  it('wraps the global dispatcher when dispatcher is null and blockedEncodings is set', async () => {
+    const fetch = mockFetch().mockResolvedValueOnce(new Response(null));
+    await guardedFetch('https://example.com', {
+      fetch,
+      dispatcher: null,
+      blockedEncodings: ['br'],
+    });
+    const init = fetch.mock.calls[0]?.[1] as
+      | (RequestInit & { dispatcher?: unknown })
+      | undefined;
+    expect(init?.dispatcher).toBeDefined();
+  });
+
   it('propagates GuardedFetchError thrown by the dispatcher lookup (DNS rebinding block)', async () => {
     // Simulate undici's connect wrapping our lookup-side GuardedFetchError in
     // a TypeError('fetch failed') with the real error on `.cause` (sometimes
