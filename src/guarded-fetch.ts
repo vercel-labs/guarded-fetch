@@ -22,7 +22,7 @@ import { recordUrlBlocked } from './url-blocked';
 
 /**
  * Subset of `RequestInit` fields we accept verbatim. We strip:
- * - `signal` / `redirect` — managed internally (timeout + manual redirect).
+ * - `signal` / `redirect` — managed internally (timeout + validated redirects).
  * - `dispatcher` — re-typed on {@link GuardedFetchOptions} to allow `null` as
  *   an explicit opt-out.
  */
@@ -33,6 +33,7 @@ type PassthroughRequestInit = Omit<
 
 type FetchBody = NonNullable<RequestInit['body']>;
 type FetchImpl = typeof globalThis.fetch;
+type RedirectPolicy = NonNullable<RequestInit['redirect']>;
 
 export interface GuardedFetchOptions
   extends PassthroughRequestInit, AssertUrlSafeOptions {
@@ -48,14 +49,25 @@ export interface GuardedFetchOptions
   /**
    * Whether to follow HTTP redirects. Every hop is independently validated
    * with the same protocol, allowlist, and SSRF checks as the original URL.
+   * Ignored when `redirect` is set.
    *
    * @default true
    */
   followRedirects?: boolean;
 
   /**
-   * Maximum number of redirect hops. Has no effect when
-   * `followRedirects: false`.
+   * Standard fetch redirect policy. `'follow'` validates every hop,
+   * `'manual'` returns the 3xx response as-is, and `'error'` throws a
+   * {@link GuardedFetchError} with code `REDIRECT_NOT_ALLOWED`. Overrides
+   * `followRedirects` when set.
+   *
+   * @default 'follow' (or `'manual'` when `followRedirects: false`)
+   */
+  redirect?: RedirectPolicy;
+
+  /**
+   * Maximum number of redirect hops. Only applies when redirects are
+   * followed (`redirect: 'follow'`, the default).
    *
    * @default 5
    */
@@ -128,6 +140,12 @@ export const DEFAULT_TIMEOUT_MS = 10_000;
 
 const DEFAULT_MAX_REDIRECTS = 5;
 
+const REDIRECT_POLICIES: ReadonlySet<string> = new Set([
+  'follow',
+  'manual',
+  'error',
+]);
+
 /**
  * Performs an SSRF-safe HTTP(S) fetch.
  *
@@ -161,6 +179,7 @@ export async function guardedFetch(
   const {
     timeoutMs = DEFAULT_TIMEOUT_MS,
     followRedirects = true,
+    redirect = followRedirects ? 'follow' : 'manual',
     maxRedirects = DEFAULT_MAX_REDIRECTS,
     sanitizeHeaders = true,
     httpsOnly,
@@ -178,6 +197,14 @@ export async function guardedFetch(
     method,
     ...rest
   } = options;
+
+  // Mirror fetch: an unknown policy is a caller bug, not a reason to fall
+  // back to following redirects.
+  if (!REDIRECT_POLICIES.has(redirect)) {
+    throw new TypeError(
+      `Invalid redirect option "${String(redirect)}"; expected "follow", "manual", or "error".`,
+    );
+  }
 
   // IP-pinning dispatcher closes the DNS rebinding window. `null` explicitly
   // opts out.
@@ -261,7 +288,7 @@ export async function guardedFetch(
       fetchImpl,
       dispatcher,
       signal,
-      followRedirects,
+      redirect,
       maxRedirects,
       assertOptions,
       opaqueErrors,
@@ -315,7 +342,7 @@ async function followChain(params: {
   fetchImpl: FetchImpl;
   dispatcher: Dispatcher | undefined;
   signal: AbortSignal;
-  followRedirects: boolean;
+  redirect: RedirectPolicy;
   maxRedirects: number;
   assertOptions: AssertUrlSafeOptions;
   opaqueErrors: boolean;
@@ -331,7 +358,7 @@ async function followChain(params: {
     fetchImpl,
     dispatcher,
     signal,
-    followRedirects,
+    redirect,
     maxRedirects,
     assertOptions,
     opaqueErrors,
@@ -354,8 +381,21 @@ async function followChain(params: {
       return response;
     }
 
-    if (!followRedirects) {
+    if (redirect === 'manual') {
       return response;
+    }
+
+    if (redirect === 'error') {
+      // Nothing more is read from this connection, so cancel instead of
+      // draining — a stalled body would otherwise hold the call until timeout.
+      await response.body?.cancel().catch(() => {
+        // Cancellation may race with an already closed response body.
+      });
+      throw new GuardedFetchError(
+        GuardedFetchErrorCode.REDIRECT_NOT_ALLOWED,
+        opaqueErrors ? OPAQUE_ERROR_MESSAGE : 'Redirects are not allowed.',
+        { url: currentUrl.toString(), status: response.status },
+      );
     }
 
     if (hop === maxRedirects) {
@@ -467,13 +507,12 @@ async function followChain(params: {
       currentHeaders = dropContentHeaders(currentHeaders);
     }
 
-    // Drop credentials on cross-origin redirects to avoid leaking them to
-    // attacker-controlled hosts. Cookie is treated identically to
-    // Authorization because the `allowedCookie` option opts in
-    // a `Cookie` header that must not follow a redirect off-origin.
+    // Custom credential names cannot be identified reliably. Keep only
+    // headers that describe the request rather than authenticate it when
+    // moving to a different origin, and never reattach dropped credentials if
+    // the redirect chain later returns to the origin.
     if (nextUrl.origin !== currentUrl.origin) {
-      currentHeaders = stripHeader(currentHeaders, 'authorization');
-      currentHeaders = stripHeader(currentHeaders, 'cookie');
+      currentHeaders = keepCrossOriginHeaders(currentHeaders);
     }
 
     currentUrl = nextUrl;
@@ -652,12 +691,26 @@ function dropContentHeaders(headers: Headers): Headers {
   return out;
 }
 
-function stripHeader(headers: Headers, name: string): Headers {
-  const lower = name.toLowerCase();
+/**
+ * Headers that survive a cross-origin redirect. They describe the request and
+ * its body, never the caller's identity, so the next origin can still parse a
+ * 307/308 body. Everything else — including custom API-key headers — is
+ * dropped.
+ */
+const CROSS_ORIGIN_REDIRECT_HEADERS: ReadonlySet<string> = new Set([
+  'accept',
+  'accept-language',
+  'content-encoding',
+  'content-language',
+  'content-type',
+  'user-agent',
+]);
+
+function keepCrossOriginHeaders(headers: Headers): Headers {
   const out = new Headers();
-  headers.forEach((value, key) => {
-    if (key.toLowerCase() !== lower) {
-      out.append(key, value);
+  headers.forEach((value, name) => {
+    if (CROSS_ORIGIN_REDIRECT_HEADERS.has(name.toLowerCase())) {
+      out.append(name, value);
     }
   });
   return out;

@@ -21,6 +21,8 @@ export const GuardedFetchErrorCode = {
   TOO_MANY_REDIRECTS: 'too_many_redirects',
   /** A redirect `Location` header was missing, invalid, or used a disallowed protocol. */
   REDIRECT_INVALID: 'redirect_invalid',
+  /** A redirect was rejected by `redirect: 'error'`. */
+  REDIRECT_NOT_ALLOWED: 'redirect_not_allowed',
   /**
    * A redirect `Location` pointed at an unsafe host (private/loopback/link-local,
    * or outside the allowlist). Distinct from `HOSTNAME_UNSAFE` so callers can
@@ -110,6 +112,7 @@ const PERMANENT_FAILURE_CODES: ReadonlySet<GuardedFetchErrorCode> = new Set([
   GuardedFetchErrorCode.HOSTNAME_UNSAFE,
   GuardedFetchErrorCode.TOO_MANY_REDIRECTS,
   GuardedFetchErrorCode.REDIRECT_INVALID,
+  GuardedFetchErrorCode.REDIRECT_NOT_ALLOWED,
   GuardedFetchErrorCode.REDIRECT_TO_UNSAFE_HOST,
   GuardedFetchErrorCode.RESPONSE_TOO_LARGE,
   GuardedFetchErrorCode.RESPONSE_ENCODING_NOT_ALLOWED,
