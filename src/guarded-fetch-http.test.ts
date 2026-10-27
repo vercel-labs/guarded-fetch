@@ -807,16 +807,18 @@ describe('guardedFetch HTTP integration behavior', () => {
     }
   });
 
-  describe('brotli', () => {
+  describe('allowBrotli: false', () => {
     const brotliBody = brotliCompressSync('compressed');
+    const noBrotli = (overrides: GuardedFetchOptions = {}) =>
+      options({ allowBrotli: false, ...overrides });
 
-    it('sends Accept-Encoding without br by default', async () => {
+    it('sends Accept-Encoding without br', async () => {
       const server = await startTestServer((_req, res) => {
         res.end('ok');
       });
 
       try {
-        await guardedFetch(`${server.baseUrl}/`, options());
+        await guardedFetch(`${server.baseUrl}/`, noBrotli());
         expect(server.requests[0]?.headers['accept-encoding']).toBe(
           'gzip, deflate',
         );
@@ -833,7 +835,7 @@ describe('guardedFetch HTTP integration behavior', () => {
       try {
         await guardedFetch(
           `${server.baseUrl}/`,
-          options({ headers: { 'Accept-Encoding': 'identity' } }),
+          noBrotli({ headers: { 'Accept-Encoding': 'identity' } }),
         );
         expect(server.requests[0]?.headers['accept-encoding']).toBe('identity');
       } finally {
@@ -849,7 +851,7 @@ describe('guardedFetch HTTP integration behavior', () => {
 
       try {
         await expect(
-          guardedFetch(`${server.baseUrl}/`, options()),
+          guardedFetch(`${server.baseUrl}/`, noBrotli()),
         ).rejects.toMatchObject({
           code: GuardedFetchErrorCode.RESPONSE_ENCODING_NOT_ALLOWED,
         });
@@ -868,7 +870,7 @@ describe('guardedFetch HTTP integration behavior', () => {
 
       try {
         await expect(
-          guardedFetch(`${server.baseUrl}/start`, options()),
+          guardedFetch(`${server.baseUrl}/start`, noBrotli()),
         ).rejects.toMatchObject({
           code: GuardedFetchErrorCode.RESPONSE_ENCODING_NOT_ALLOWED,
         });
@@ -886,7 +888,7 @@ describe('guardedFetch HTTP integration behavior', () => {
 
       try {
         await expect(
-          guardedFetch(`${server.baseUrl}/`, options({ opaqueErrors: true })),
+          guardedFetch(`${server.baseUrl}/`, noBrotli({ opaqueErrors: true })),
         ).rejects.toMatchObject({
           code: GuardedFetchErrorCode.RESPONSE_ENCODING_NOT_ALLOWED,
           message: OPAQUE_ERROR_MESSAGE,
@@ -896,7 +898,7 @@ describe('guardedFetch HTTP integration behavior', () => {
       }
     });
 
-    it('decodes br when allowBrotli is true', async () => {
+    it('decodes br by default', async () => {
       const server = await startTestServer((_req, res) => {
         res.setHeader('content-encoding', 'br');
         res.end(brotliBody);
@@ -904,10 +906,7 @@ describe('guardedFetch HTTP integration behavior', () => {
 
       try {
         await expect(
-          guardedFetchText(
-            `${server.baseUrl}/`,
-            bodyOptions({ allowBrotli: true }),
-          ),
+          guardedFetchText(`${server.baseUrl}/`, bodyOptions()),
         ).resolves.toBe('compressed');
       } finally {
         await server.close();

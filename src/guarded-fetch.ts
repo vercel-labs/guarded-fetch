@@ -16,7 +16,7 @@ import {
   GuardedFetchErrorCode,
 } from './errors';
 import { getSharedGuardedDispatcher } from './guarded-dispatcher';
-import { rejectBrotli } from './reject-brotli';
+import { rejectEncoding } from './reject-encoding';
 import { sanitizeRequestHeaders } from './sanitize-headers';
 import { recordUrlBlocked } from './url-blocked';
 
@@ -113,13 +113,13 @@ export interface GuardedFetchOptions
   /**
    * Accept brotli (`br`) response bodies.
    *
-   * When `false`, the request sends `Accept-Encoding: gzip, deflate` unless
-   * the caller set that header, and a response that lists `br` in
+   * Set `false` on Node versions that have the brotli decoder bug
+   * (CVE-2026-111497). The request then sends `Accept-Encoding: gzip, deflate`
+   * unless the caller set that header, and a response that lists `br` in
    * `Content-Encoding` fails with code `RESPONSE_ENCODING_NOT_ALLOWED` before
-   * any body byte reaches the decoder. This protects Node versions that have
-   * the brotli decoder bug (CVE-2026-111497).
+   * any body byte reaches the decoder.
    *
-   * @default false
+   * @default true
    */
   allowBrotli?: boolean;
 }
@@ -172,7 +172,7 @@ export async function guardedFetch(
     fetch: fetchImpl = undiciFetch as unknown as FetchImpl,
     dispatcher: providedDispatcher,
     allowedCookie,
-    allowBrotli = false,
+    allowBrotli = true,
     headers,
     body,
     method,
@@ -186,7 +186,9 @@ export async function guardedFetch(
       ? undefined
       : (providedDispatcher ?? getSharedGuardedDispatcher());
   if (!allowBrotli) {
-    dispatcher = (dispatcher ?? getGlobalDispatcher()).compose(rejectBrotli);
+    dispatcher = (dispatcher ?? getGlobalDispatcher()).compose(
+      rejectEncoding(['br']),
+    );
   }
 
   const assertOptions: AssertUrlSafeOptions = {

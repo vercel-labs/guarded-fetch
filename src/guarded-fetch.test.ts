@@ -435,20 +435,20 @@ describe(guardedFetch, () => {
 
   it('honors dispatcher: null to explicitly disable IP pinning', async () => {
     const fetch = mockFetch().mockResolvedValueOnce(new Response(null));
-    await guardedFetch('https://example.com', {
-      fetch,
-      dispatcher: null,
-      allowBrotli: true,
-    });
+    await guardedFetch('https://example.com', { fetch, dispatcher: null });
     const init = fetch.mock.calls[0]?.[1] as
       | (RequestInit & { dispatcher?: unknown })
       | undefined;
     expect(init?.dispatcher).toBeUndefined();
   });
 
-  it('still wraps the global dispatcher with the brotli guard when dispatcher is null', async () => {
+  it('wraps the global dispatcher when dispatcher is null and allowBrotli is false', async () => {
     const fetch = mockFetch().mockResolvedValueOnce(new Response(null));
-    await guardedFetch('https://example.com', { fetch, dispatcher: null });
+    await guardedFetch('https://example.com', {
+      fetch,
+      dispatcher: null,
+      allowBrotli: false,
+    });
     const init = fetch.mock.calls[0]?.[1] as
       | (RequestInit & { dispatcher?: unknown })
       | undefined;
