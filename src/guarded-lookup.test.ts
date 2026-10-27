@@ -92,12 +92,8 @@ describe(isSafeIpAddress, () => {
 describe(createGuardedLookup, () => {
   it('passes through when dns.lookup returns a public IPv4', async () => {
     mockDnsLookup.mockImplementationOnce(
-      (
-        _host,
-        _opts,
-        cb: (err: unknown, addr: string, family: number) => void,
-      ) => {
-        cb(null, '8.8.8.8', 4);
+      (_host, _opts, cb: (err: unknown, addr: dns.LookupAddress[]) => void) => {
+        cb(null, [{ address: '8.8.8.8', family: 4 }]);
       },
     );
     const lookup = createGuardedLookup();
@@ -109,12 +105,8 @@ describe(createGuardedLookup, () => {
 
   it('rejects with HOSTNAME_UNSAFE when dns.lookup returns a private IP', async () => {
     mockDnsLookup.mockImplementationOnce(
-      (
-        _host,
-        _opts,
-        cb: (err: unknown, addr: string, family: number) => void,
-      ) => {
-        cb(null, '10.0.0.1', 4);
+      (_host, _opts, cb: (err: unknown, addr: dns.LookupAddress[]) => void) => {
+        cb(null, [{ address: '10.0.0.1', family: 4 }]);
       },
     );
     const lookup = createGuardedLookup();
@@ -136,12 +128,8 @@ describe(createGuardedLookup, () => {
     // preflight. By the time the socket connects, the attacker's server
     // returned 169.254.169.254. The safe lookup catches this.
     mockDnsLookup.mockImplementationOnce(
-      (
-        _host,
-        _opts,
-        cb: (err: unknown, addr: string, family: number) => void,
-      ) => {
-        cb(null, '169.254.169.254', 4);
+      (_host, _opts, cb: (err: unknown, addr: dns.LookupAddress[]) => void) => {
+        cb(null, [{ address: '169.254.169.254', family: 4 }]);
       },
     );
     const lookup = createGuardedLookup();
@@ -205,12 +193,8 @@ describe(createGuardedLookup, () => {
 
   it('opaqueErrors: true produces a generic message while preserving code', async () => {
     mockDnsLookup.mockImplementationOnce(
-      (
-        _host,
-        _opts,
-        cb: (err: unknown, addr: string, family: number) => void,
-      ) => {
-        cb(null, '169.254.169.254', 4);
+      (_host, _opts, cb: (err: unknown, addr: dns.LookupAddress[]) => void) => {
+        cb(null, [{ address: '169.254.169.254', family: 4 }]);
       },
     );
     const lookup = createGuardedLookup({ opaqueErrors: true });
@@ -220,4 +204,87 @@ describe(createGuardedLookup, () => {
     expect(safeErr.code).toBe(GuardedFetchErrorCode.HOSTNAME_UNSAFE);
     expect(safeErr.message).not.toContain('169.254.169.254');
   });
+
+  it('requests every address even when the connector asks for one, and rejects a private secondary', async () => {
+    mockDnsLookup.mockImplementationOnce(
+      (_host, _opts, cb: (err: unknown, addr: dns.LookupAddress[]) => void) => {
+        cb(null, [
+          { address: '8.8.8.8', family: 4 },
+          { address: '127.0.0.1', family: 4 },
+        ]);
+      },
+    );
+    const lookup = createGuardedLookup();
+    const { err } = await callLookup(lookup, 'files.example.com', {});
+    expect((err as GuardedFetchError).code).toBe(
+      GuardedFetchErrorCode.HOSTNAME_UNSAFE,
+    );
+    expect(mockDnsLookup).toHaveBeenCalledWith(
+      'files.example.com',
+      { all: true },
+      expect.any(Function),
+    );
+  });
+
+  it('preserves lookup settings and the single-result callback shape', async () => {
+    mockDnsLookup.mockImplementationOnce(
+      (_host, _opts, cb: (err: unknown, addr: dns.LookupAddress[]) => void) => {
+        cb(null, [{ address: '8.8.8.8', family: 4 }]);
+      },
+    );
+    const lookup = createGuardedLookup();
+    const { err, addr, family } = await callLookup(lookup, 'example.com', {
+      family: 4,
+      hints: dns.ADDRCONFIG,
+    });
+    expect(err).toBeNull();
+    expect(addr).toBe('8.8.8.8');
+    expect(family).toBe(4);
+    expect(mockDnsLookup).toHaveBeenCalledWith(
+      'example.com',
+      { family: 4, hints: dns.ADDRCONFIG, all: true },
+      expect.any(Function),
+    );
+  });
+
+  it.each([
+    { addresses: [], message: 'DNS returned no addresses' },
+    {
+      addresses: [{ address: 'not-an-ip', family: 4 }],
+      message: 'DNS returned a malformed address',
+    },
+    {
+      addresses: [{ address: '8.8.8.8', family: 6 }],
+      message: 'DNS returned a malformed address',
+    },
+    {
+      addresses: [{ address: '8.8.8.8', family: 0 }],
+      message: 'DNS returned a malformed address',
+    },
+  ])(
+    'rejects empty or malformed results: $addresses',
+    async ({ addresses, message }) => {
+      mockDnsLookup.mockImplementationOnce(
+        (
+          _host,
+          _opts,
+          cb: (err: unknown, addr: dns.LookupAddress[]) => void,
+        ) => {
+          cb(null, addresses);
+        },
+      );
+      const lookup = createGuardedLookup();
+      const { err } = await callLookup(lookup, 'example.com', {});
+      expect(err).toBeInstanceOf(GuardedFetchError);
+      expect((err as GuardedFetchError).code).toBe(
+        GuardedFetchErrorCode.HOSTNAME_UNSAFE,
+      );
+      expect((err as GuardedFetchError).message).toContain(message);
+      expect(blockedEvents).toHaveBeenCalledWith({
+        reason: GuardedFetchErrorCode.HOSTNAME_UNSAFE,
+        domain: 'example.com',
+        subReason: HostnameUnsafeSubReason.DNS_RESOLUTION_FAILED,
+      });
+    },
+  );
 });
