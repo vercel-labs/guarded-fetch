@@ -221,11 +221,7 @@ export async function guardedFetch(
     );
   }, timeoutMs);
 
-  // Combine the caller's signal with the timeout signal. The caller's abort
-  // must stay active while the body streams. A forwarding listener cannot do
-  // this: if we remove it in `finally`, the body loses the abort; if we keep
-  // it, it leaks when the body is never read. `AbortSignal.any` has no
-  // listener to remove.
+  // No forwarding listener: it would be removed before the body is read.
   const signal = externalSignal
     ? AbortSignal.any([controller.signal, externalSignal])
     : controller.signal;
