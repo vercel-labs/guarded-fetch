@@ -1,4 +1,9 @@
-import { fetch as undiciFetch, Headers, type Dispatcher } from 'undici';
+import {
+  fetch as undiciFetch,
+  getGlobalDispatcher,
+  Headers,
+  type Dispatcher,
+} from 'undici';
 
 import {
   assertUrlIsSafeToFetch,
@@ -11,6 +16,7 @@ import {
   GuardedFetchErrorCode,
 } from './errors';
 import { getSharedGuardedDispatcher } from './guarded-dispatcher';
+import { rejectBrotli } from './reject-brotli';
 import { sanitizeRequestHeaders } from './sanitize-headers';
 import { recordUrlBlocked } from './url-blocked';
 
@@ -103,6 +109,19 @@ export interface GuardedFetchOptions
    * IP pinning, response size limit) remain in force.
    */
   allowedCookie?: string;
+
+  /**
+   * Accept brotli (`br`) response bodies.
+   *
+   * When `false`, the request sends `Accept-Encoding: gzip, deflate` unless
+   * the caller set that header, and a response that lists `br` in
+   * `Content-Encoding` fails with code `RESPONSE_ENCODING_NOT_ALLOWED` before
+   * any body byte reaches the decoder. This protects Node versions that have
+   * the brotli decoder bug (CVE-2026-111497).
+   *
+   * @default false
+   */
+  allowBrotli?: boolean;
 }
 
 export const DEFAULT_TIMEOUT_MS = 10_000;
@@ -153,6 +172,7 @@ export async function guardedFetch(
     fetch: fetchImpl = undiciFetch as unknown as FetchImpl,
     dispatcher: providedDispatcher,
     allowedCookie,
+    allowBrotli = false,
     headers,
     body,
     method,
@@ -161,10 +181,13 @@ export async function guardedFetch(
 
   // IP-pinning dispatcher closes the DNS rebinding window. `null` explicitly
   // opts out.
-  const dispatcher =
+  let dispatcher =
     providedDispatcher === null
       ? undefined
       : (providedDispatcher ?? getSharedGuardedDispatcher());
+  if (!allowBrotli) {
+    dispatcher = (dispatcher ?? getGlobalDispatcher()).compose(rejectBrotli);
+  }
 
   const assertOptions: AssertUrlSafeOptions = {
     httpsOnly,
@@ -224,6 +247,10 @@ export async function guardedFetch(
 
     if (allowedCookie !== undefined) {
       outboundHeaders.set('cookie', allowedCookie);
+    }
+
+    if (!allowBrotli && !outboundHeaders.has('accept-encoding')) {
+      outboundHeaders.set('accept-encoding', 'gzip, deflate');
     }
 
     return await followChain({
