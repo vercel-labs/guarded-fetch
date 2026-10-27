@@ -93,9 +93,9 @@ function ipv4FromHextetPair(hi: number, lo: number): string {
 }
 
 /**
- * Decodes IPv4 addresses embedded in 6to4 (`2002::/16`) and the NAT64
- * well-known prefix (`64:ff9b::/96`) so they can be checked with the same
- * IPv4 classifier as `::ffff:` mapped forms.
+ * Decodes IPv4 addresses embedded in IPv4-mapped (`::ffff:0:0/96`), 6to4
+ * (`2002::/16`), and NAT64 well-known prefix (`64:ff9b::/96`) literals so
+ * they can be checked with the same IPv4 classifier as native IPv4.
  *
  * The RFC 8215 local-use prefix `64:ff9b:1::/48` is not decoded here — it is
  * rejected wholesale by {@link isUnsafeIpv6Address}. Its translation-prefix
@@ -110,6 +110,19 @@ function tryDecodeEmbeddedIpv4FromIpv6(v6: string): string | null {
   }
 
   const [h0, h1, h2, h3, h4, h5, h6, h7] = hextets;
+
+  // IPv4-mapped — RFC 4291: ::ffff:<ipv4>, in any spelling (expanded,
+  // dotted, or hex).
+  if (
+    h0 === 0 &&
+    h1 === 0 &&
+    h2 === 0 &&
+    h3 === 0 &&
+    h4 === 0 &&
+    h5 === 0xffff
+  ) {
+    return ipv4FromHextetPair(h6 as number, h7 as number);
+  }
 
   // 6to4 — RFC 3056: 2002:<ipv4-high>:<ipv4-low>:...
   if (h0 === 0x2002) {
@@ -134,8 +147,9 @@ function tryDecodeEmbeddedIpv4FromIpv6(v6: string): string | null {
 /**
  * IPv6 ranges checked explicitly: unique local `fc00::/7`, link-local
  * `fe80::/10`, deprecated site-local `fec0::/10`, multicast `ff00::/8`,
- * documentation `2001:db8::/32`, and the NAT64 local-use prefix
- * `64:ff9b:1::/48`.
+ * documentation `2001:db8::/32` and `3fff::/20`, the NAT64 local-use prefix
+ * `64:ff9b:1::/48`, IPv4-compatible `::/96`, and IPv4-translated
+ * `::ffff:0:0:0/96`.
  */
 function isUnsafeIpv6Address(v6: string): boolean {
   const lower = normalizeIpv6Literal(v6);
@@ -180,6 +194,27 @@ function isUnsafeIpv6Address(v6: string): boolean {
     return true;
   }
 
+  const hextets = expandIpv6Hextets(v6);
+
+  // 3fff::/20 — RFC 9637 documentation range.
+  if (hextets?.[0] === 0x3fff && ((hextets[1] ?? 0) & 0xf000) === 0) {
+    return true;
+  }
+
+  // ::/96 IPv4-compatible (deprecated, RFC 4291 §2.5.5.1) and
+  // ::ffff:0:0:0/96 IPv4-translated (RFC 2765 SIIT). Neither is a routable
+  // destination; both only make sense to a local stack or translator, which
+  // may forward to whatever IPv4 sits in the low bits. Reject the ranges
+  // outright rather than decoding, so a public-looking embedded IPv4 cannot
+  // unlock them.
+  if (
+    hextets?.slice(0, 4).every((h) => h === 0) &&
+    ((hextets[4] === 0 && hextets[5] === 0) ||
+      (hextets[4] === 0xffff && hextets[5] === 0))
+  ) {
+    return true;
+  }
+
   return isNonUnicastAddress(v6);
 }
 
@@ -198,25 +233,6 @@ export function isAddressUnsafeForServerSideFetch(address: string): boolean {
 
   if (net.isIP(address) === 4) {
     return isUnsafeIpv4Address(address);
-  }
-
-  const lower = address.toLowerCase();
-
-  const dottedMappedIpv4 = lower.match(
-    /^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/,
-  );
-  if (dottedMappedIpv4) {
-    return isUnsafeIpv4Address(dottedMappedIpv4[1] as string);
-  }
-
-  const hexMappedIpv4 = lower.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
-  if (hexMappedIpv4) {
-    const hi = Number.parseInt(hexMappedIpv4[1] ?? '0', 16);
-    const lo = Number.parseInt(hexMappedIpv4[2] ?? '0', 16);
-    const v4 = `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${
-      lo & 0xff
-    }`;
-    return isUnsafeIpv4Address(v4);
   }
 
   if (net.isIP(address) === 6) {
