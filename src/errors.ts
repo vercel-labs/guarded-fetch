@@ -29,7 +29,7 @@ export const GuardedFetchErrorCode = {
   REDIRECT_TO_UNSAFE_HOST: 'redirect_to_unsafe_host',
   /** The response body exceeded `maxResponseBytes`. Only raised by convenience readers. */
   RESPONSE_TOO_LARGE: 'response_too_large',
-  /** The response used a blocked `Content-Encoding` (brotli, unless `allowBrotli: true`). */
+  /** The response used a `Content-Encoding` listed in `blockedEncodings`. */
   RESPONSE_ENCODING_NOT_ALLOWED: 'response_encoding_not_allowed',
   /** A network-level failure occurred (DNS, connection, TLS, socket). */
   NETWORK_ERROR: 'network_error',

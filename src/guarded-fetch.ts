@@ -111,17 +111,17 @@ export interface GuardedFetchOptions
   allowedCookie?: string;
 
   /**
-   * Accept brotli (`br`) response bodies.
+   * Response content codings to reject, for example `['br']` on Node versions
+   * that have the brotli decoder bug (CVE-2026-111497).
    *
-   * Set `false` on Node versions that have the brotli decoder bug
-   * (CVE-2026-111497). The request then sends `Accept-Encoding: gzip, deflate`
-   * unless the caller set that header, and a response that lists `br` in
+   * When set, the request sends an `Accept-Encoding` without those codings
+   * unless the caller set that header. A response that lists one of them in
    * `Content-Encoding` fails with code `RESPONSE_ENCODING_NOT_ALLOWED` before
    * any body byte reaches the decoder.
    *
-   * @default true
+   * @default []
    */
-  allowBrotli?: boolean;
+  blockedEncodings?: readonly string[];
 }
 
 export const DEFAULT_TIMEOUT_MS = 10_000;
@@ -172,7 +172,7 @@ export async function guardedFetch(
     fetch: fetchImpl = undiciFetch as unknown as FetchImpl,
     dispatcher: providedDispatcher,
     allowedCookie,
-    allowBrotli = true,
+    blockedEncodings = [],
     headers,
     body,
     method,
@@ -185,9 +185,9 @@ export async function guardedFetch(
     providedDispatcher === null
       ? undefined
       : (providedDispatcher ?? getSharedGuardedDispatcher());
-  if (!allowBrotli) {
+  if (blockedEncodings.length > 0) {
     dispatcher = (dispatcher ?? getGlobalDispatcher()).compose(
-      rejectEncoding(['br']),
+      rejectEncoding(blockedEncodings),
     );
   }
 
@@ -251,8 +251,11 @@ export async function guardedFetch(
       outboundHeaders.set('cookie', allowedCookie);
     }
 
-    if (!allowBrotli && !outboundHeaders.has('accept-encoding')) {
-      outboundHeaders.set('accept-encoding', 'gzip, deflate');
+    if (
+      blockedEncodings.length > 0 &&
+      !outboundHeaders.has('accept-encoding')
+    ) {
+      outboundHeaders.set('accept-encoding', acceptEncoding(blockedEncodings));
     }
 
     return await followChain({
@@ -578,6 +581,15 @@ async function executeFetch(params: {
       { hostname: url.hostname, url: url.toString(), cause: error },
     );
   }
+}
+
+const DEFAULT_ACCEPT_ENCODINGS = ['br', 'gzip', 'deflate'];
+
+/** undici's default `Accept-Encoding` list without the blocked codings. */
+function acceptEncoding(blocked: readonly string[]): string {
+  const lower = new Set(blocked.map((coding) => coding.toLowerCase()));
+  const allowed = DEFAULT_ACCEPT_ENCODINGS.filter((c) => !lower.has(c));
+  return allowed.length > 0 ? allowed.join(', ') : 'identity';
 }
 
 function isRedirect(status: number): boolean {
