@@ -1,18 +1,16 @@
 import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 
-vi.mock('node:dns', () => {
-  const lookup = vi.fn();
-  return { default: { lookup }, lookup };
-});
+vi.mock('./resolve-host', () => ({ resolveHost: vi.fn() }));
 
-import dns from 'node:dns';
+import type dns from 'node:dns';
 
 import { GuardedFetchError, GuardedFetchErrorCode } from './errors';
 import { createGuardedLookup } from './guarded-lookup';
 import { isSafeIpAddress } from './ip-address';
+import { resolveHost } from './resolve-host';
 import { HostnameUnsafeSubReason, setUrlBlockedHandler } from './url-blocked';
 
-const mockDnsLookup = dns.lookup as unknown as Mock;
+const mockResolveHost = resolveHost as unknown as Mock;
 const blockedEvents = vi.fn();
 
 type LookupResult = {
@@ -34,7 +32,7 @@ function callLookup(
 }
 
 beforeEach(() => {
-  mockDnsLookup.mockReset();
+  mockResolveHost.mockReset();
   blockedEvents.mockClear();
   setUrlBlockedHandler(blockedEvents);
 });
@@ -90,12 +88,8 @@ describe(isSafeIpAddress, () => {
 });
 
 describe(createGuardedLookup, () => {
-  it('passes through when dns.lookup returns a public IPv4', async () => {
-    mockDnsLookup.mockImplementationOnce(
-      (_host, _opts, cb: (err: unknown, addr: dns.LookupAddress[]) => void) => {
-        cb(null, [{ address: '8.8.8.8', family: 4 }]);
-      },
-    );
+  it('passes through when DNS returns a public IPv4', async () => {
+    mockResolveHost.mockResolvedValueOnce([{ address: '8.8.8.8', family: 4 }]);
     const lookup = createGuardedLookup();
     const { err, addr, family } = await callLookup(lookup, 'example.com', {});
     expect(err).toBeNull();
@@ -103,12 +97,8 @@ describe(createGuardedLookup, () => {
     expect(family).toBe(4);
   });
 
-  it('rejects with HOSTNAME_UNSAFE when dns.lookup returns a private IP', async () => {
-    mockDnsLookup.mockImplementationOnce(
-      (_host, _opts, cb: (err: unknown, addr: dns.LookupAddress[]) => void) => {
-        cb(null, [{ address: '10.0.0.1', family: 4 }]);
-      },
-    );
+  it('rejects with HOSTNAME_UNSAFE when DNS returns a private IP', async () => {
+    mockResolveHost.mockResolvedValueOnce([{ address: '10.0.0.1', family: 4 }]);
     const lookup = createGuardedLookup();
     const { err } = await callLookup(lookup, 'attacker.com', {});
     expect(err).toBeInstanceOf(GuardedFetchError);
@@ -127,11 +117,9 @@ describe(createGuardedLookup, () => {
     // our codepath) returned a public IP and passed our assertUrlIsSafeToFetch
     // preflight. By the time the socket connects, the attacker's server
     // returned 169.254.169.254. The safe lookup catches this.
-    mockDnsLookup.mockImplementationOnce(
-      (_host, _opts, cb: (err: unknown, addr: dns.LookupAddress[]) => void) => {
-        cb(null, [{ address: '169.254.169.254', family: 4 }]);
-      },
-    );
+    mockResolveHost.mockResolvedValueOnce([
+      { address: '169.254.169.254', family: 4 },
+    ]);
     const lookup = createGuardedLookup();
     const { err } = await callLookup(lookup, 'attacker.com', {});
     expect(err).toBeInstanceOf(GuardedFetchError);
@@ -140,29 +128,21 @@ describe(createGuardedLookup, () => {
     );
   });
 
-  it('propagates the underlying dns.lookup error unchanged', async () => {
+  it('propagates the underlying DNS error unchanged', async () => {
     const dnsErr = Object.assign(new Error('ENOTFOUND'), {
       code: 'ENOTFOUND',
     }) as NodeJS.ErrnoException;
-    mockDnsLookup.mockImplementationOnce(
-      (_host, _opts, cb: (err: unknown) => void) => {
-        cb(dnsErr);
-      },
-    );
+    mockResolveHost.mockRejectedValueOnce(dnsErr);
     const lookup = createGuardedLookup();
     const { err } = await callLookup(lookup, 'nx.invalid', {});
     expect(err).toBe(dnsErr);
   });
 
   it('in all:true mode, rejects when ANY entry is unsafe', async () => {
-    mockDnsLookup.mockImplementationOnce(
-      (_host, _opts, cb: (err: unknown, addr: dns.LookupAddress[]) => void) => {
-        cb(null, [
-          { address: '8.8.8.8', family: 4 },
-          { address: '10.0.0.1', family: 4 },
-        ]);
-      },
-    );
+    mockResolveHost.mockResolvedValueOnce([
+      { address: '8.8.8.8', family: 4 },
+      { address: '10.0.0.1', family: 4 },
+    ]);
     const lookup = createGuardedLookup();
     const { err } = await callLookup(lookup, 'multi.example.com', {
       all: true,
@@ -178,11 +158,7 @@ describe(createGuardedLookup, () => {
       { address: '8.8.8.8', family: 4 },
       { address: '2001:4860:4860::8888', family: 6 },
     ];
-    mockDnsLookup.mockImplementationOnce(
-      (_host, _opts, cb: (err: unknown, addr: dns.LookupAddress[]) => void) => {
-        cb(null, results);
-      },
-    );
+    mockResolveHost.mockResolvedValueOnce(results);
     const lookup = createGuardedLookup();
     const { err, addr } = await callLookup(lookup, 'example.com', {
       all: true,
@@ -192,11 +168,9 @@ describe(createGuardedLookup, () => {
   });
 
   it('opaqueErrors: true produces a generic message while preserving code', async () => {
-    mockDnsLookup.mockImplementationOnce(
-      (_host, _opts, cb: (err: unknown, addr: dns.LookupAddress[]) => void) => {
-        cb(null, [{ address: '169.254.169.254', family: 4 }]);
-      },
-    );
+    mockResolveHost.mockResolvedValueOnce([
+      { address: '169.254.169.254', family: 4 },
+    ]);
     const lookup = createGuardedLookup({ opaqueErrors: true });
     const { err } = await callLookup(lookup, 'attacker.com', {});
     expect(err).toBeInstanceOf(GuardedFetchError);
@@ -206,45 +180,33 @@ describe(createGuardedLookup, () => {
   });
 
   it('requests every address even when the connector asks for one, and rejects a private secondary', async () => {
-    mockDnsLookup.mockImplementationOnce(
-      (_host, _opts, cb: (err: unknown, addr: dns.LookupAddress[]) => void) => {
-        cb(null, [
-          { address: '8.8.8.8', family: 4 },
-          { address: '127.0.0.1', family: 4 },
-        ]);
-      },
-    );
+    mockResolveHost.mockResolvedValueOnce([
+      { address: '8.8.8.8', family: 4 },
+      { address: '127.0.0.1', family: 4 },
+    ]);
     const lookup = createGuardedLookup();
     const { err } = await callLookup(lookup, 'files.example.com', {});
     expect((err as GuardedFetchError).code).toBe(
       GuardedFetchErrorCode.HOSTNAME_UNSAFE,
     );
-    expect(mockDnsLookup).toHaveBeenCalledWith(
-      'files.example.com',
-      { all: true },
-      expect.any(Function),
-    );
+    expect(mockResolveHost).toHaveBeenCalledWith('files.example.com', {
+      family: 0,
+    });
   });
 
   it('preserves lookup settings and the single-result callback shape', async () => {
-    mockDnsLookup.mockImplementationOnce(
-      (_host, _opts, cb: (err: unknown, addr: dns.LookupAddress[]) => void) => {
-        cb(null, [{ address: '8.8.8.8', family: 4 }]);
-      },
-    );
+    mockResolveHost.mockResolvedValueOnce([{ address: '8.8.8.8', family: 4 }]);
     const lookup = createGuardedLookup();
     const { err, addr, family } = await callLookup(lookup, 'example.com', {
       family: 4,
-      hints: dns.ADDRCONFIG,
+      hints: 1024, // dns.ADDRCONFIG
     });
     expect(err).toBeNull();
     expect(addr).toBe('8.8.8.8');
     expect(family).toBe(4);
-    expect(mockDnsLookup).toHaveBeenCalledWith(
-      'example.com',
-      { family: 4, hints: dns.ADDRCONFIG, all: true },
-      expect.any(Function),
-    );
+    expect(mockResolveHost).toHaveBeenCalledWith('example.com', {
+      family: 4,
+    });
   });
 
   it.each([
@@ -264,15 +226,7 @@ describe(createGuardedLookup, () => {
   ])(
     'rejects empty or malformed results: $addresses',
     async ({ addresses, message }) => {
-      mockDnsLookup.mockImplementationOnce(
-        (
-          _host,
-          _opts,
-          cb: (err: unknown, addr: dns.LookupAddress[]) => void,
-        ) => {
-          cb(null, addresses);
-        },
-      );
+      mockResolveHost.mockResolvedValueOnce(addresses);
       const lookup = createGuardedLookup();
       const { err } = await callLookup(lookup, 'example.com', {});
       expect(err).toBeInstanceOf(GuardedFetchError);

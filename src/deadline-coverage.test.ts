@@ -1,13 +1,12 @@
 import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 
-vi.mock('node:dns/promises', () => ({ lookup: vi.fn() }));
-
-import { lookup } from 'node:dns/promises';
+vi.mock('./resolve-host', () => ({ resolveHost: vi.fn() }));
 
 import { GuardedFetchError, GuardedFetchErrorCode } from './errors';
 import { guardedFetch } from './guarded-fetch';
+import { resolveHost } from './resolve-host';
 
-const mockLookup = lookup as unknown as Mock;
+const mockLookup = resolveHost as unknown as Mock;
 
 /** A resolver that accepts the query and simply never answers. */
 function neverResolves(): Promise<never> {

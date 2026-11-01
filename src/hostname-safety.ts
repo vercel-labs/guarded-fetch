@@ -1,8 +1,8 @@
 import type { LookupAddress } from 'node:dns';
-import { lookup } from 'node:dns/promises';
 import net from 'node:net';
 
 import { isAddressUnsafeForServerSideFetch } from './ip-address';
+import { resolveHost } from './resolve-host';
 import {
   HostnameUnsafeSubReason,
   type HostnameUnsafeSubReason as HostnameUnsafeSubReasonType,
@@ -33,7 +33,7 @@ export type HostnameSafetyResult =
 
 /**
  * Classifies whether `hostname` is safe for server-side outbound HTTP(S).
- * Uses the same OS resolver path that undici's connect-time lookup uses.
+ * Uses the same resolver ({@link resolveHost}) as the connect-time lookup.
  */
 export async function checkHostnameSafetyForServerSideFetch(
   hostname: string,
@@ -57,7 +57,7 @@ export async function checkHostnameSafetyForServerSideFetch(
 
   let addresses: LookupAddress[];
   try {
-    addresses = await lookup(host, { all: true, verbatim: true });
+    addresses = await resolveHost(host);
   } catch {
     return {
       safe: false,

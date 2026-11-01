@@ -275,10 +275,10 @@ export async function guardedFetch(
  * Races `promise` against `signal`, rejecting with the signal's reason as soon
  * as it aborts.
  *
- * Used for the hostname-safety checks, which resolve DNS through
- * `node:dns/promises` and take no `AbortSignal` of their own. The lookup keeps
- * running in the background — this bounds how long the caller waits on it, and
- * fails closed when the deadline passes.
+ * Used for the hostname-safety checks, which take no `AbortSignal` of their
+ * own. The query keeps running in the background until its own DNS timeout;
+ * it runs on c-ares and holds no thread pool slot while it waits. This bounds
+ * how long the caller waits on it, and fails closed when the deadline passes.
  */
 async function withDeadline<T>(
   promise: Promise<T>,

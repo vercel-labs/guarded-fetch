@@ -1,16 +1,13 @@
 import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 
-vi.mock('node:dns/promises', () => ({
-  lookup: vi.fn(),
-}));
-
-import { lookup } from 'node:dns/promises';
+vi.mock('./resolve-host', () => ({ resolveHost: vi.fn() }));
 
 import { GuardedFetchError, GuardedFetchErrorCode } from './errors';
 import { guardedFetch } from './guarded-fetch';
+import { resolveHost } from './resolve-host';
 import { HostnameUnsafeSubReason, setUrlBlockedHandler } from './url-blocked';
 
-const mockLookup = lookup as unknown as Mock;
+const mockLookup = resolveHost as unknown as Mock;
 const blockedEvents = vi.fn();
 
 type MockFetch = ReturnType<typeof vi.fn<typeof globalThis.fetch>>;
