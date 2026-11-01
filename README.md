@@ -249,6 +249,12 @@ covers:
    any record is unsafe, the answer is empty, or an address does not match
    its reported family.
 
+Within `guardedFetch`, layer 2 does not resolve the host a second time. The
+preflight's validated answer is handed to the connect-time lookup, which
+checks it again and connects only to those addresses, so each hop resolves
+once. Without a preflight answer (for example, when `createGuardedLookup` or
+a guarded dispatcher is used on its own), the lookup resolves the host itself.
+
 Layer 2 is on by default via the shared dispatcher; injected `fetch`
 implementations must be undici-compatible for it to stay active. Pass
 `dispatcher: null` to opt out (dangerous — only behind a trusted proxy that

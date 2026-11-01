@@ -101,6 +101,7 @@ describe(checkHostnameSafetyForServerSideFetch, () => {
       checkHostnameSafetyForServerSideFetch('example.com'),
     ).resolves.toEqual({
       safe: true,
+      addresses: [{ address: '93.184.216.34', family: 4 }],
     });
   });
 });

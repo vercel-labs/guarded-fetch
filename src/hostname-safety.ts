@@ -28,7 +28,11 @@ export function parseHostnameForOutboundLookup(raw: string): string {
 }
 
 export type HostnameSafetyResult =
-  | { safe: true }
+  | {
+      safe: true;
+      /** The validated DNS answer, when the host had to be resolved. */
+      addresses?: LookupAddress[];
+    }
   | { safe: false; subReason: HostnameUnsafeSubReasonType };
 
 /**
@@ -81,5 +85,5 @@ export async function checkHostnameSafetyForServerSideFetch(
     };
   }
 
-  return { safe: true };
+  return { safe: true, addresses };
 }

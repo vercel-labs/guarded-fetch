@@ -7,6 +7,7 @@ import {
   GuardedFetchErrorCode,
 } from './errors';
 import { isSafeIpAddress } from './ip-address';
+import { getPinnedAddresses } from './pinned-addresses';
 import { resolveHost } from './resolve-host';
 import { HostnameUnsafeSubReason, recordUrlBlocked } from './url-blocked';
 
@@ -99,7 +100,15 @@ export function createGuardedLookup(
 
   return function guardedLookup(hostname, opts, callback) {
     const lookupOptions = typeof opts === 'number' ? { family: opts } : opts;
-    resolveHost(hostname, { family: toFamily(lookupOptions?.family) }).then(
+    const family = toFamily(lookupOptions?.family);
+    // `guardedFetch` pins the answer its preflight already validated; reuse
+    // it rather than resolving the same host twice per hop. It still goes
+    // through the checks below.
+    const pinned = getPinnedAddresses(hostname, family);
+    const resolved = pinned
+      ? Promise.resolve(pinned)
+      : resolveHost(hostname, { family });
+    resolved.then(
       (addresses) => {
         const first = Array.isArray(addresses) ? addresses[0] : undefined;
         if (!first) {

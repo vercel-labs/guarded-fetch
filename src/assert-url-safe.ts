@@ -1,3 +1,5 @@
+import type { LookupAddress } from 'node:dns';
+
 import {
   OPAQUE_ERROR_MESSAGE,
   GuardedFetchError,
@@ -97,6 +99,19 @@ export async function assertUrlIsSafeToFetch(
   rawUrl: string | URL,
   options: AssertUrlSafeOptions = {},
 ): Promise<ValidatedFetchTarget> {
+  const { url, hostname } = await validateFetchTarget(rawUrl, options);
+  return { url, hostname };
+}
+
+/**
+ * {@link assertUrlIsSafeToFetch}, plus the validated DNS answer when the host
+ * had to be resolved. `guardedFetch` connects to exactly these addresses
+ * instead of resolving the host a second time.
+ */
+export async function validateFetchTarget(
+  rawUrl: string | URL,
+  options: AssertUrlSafeOptions = {},
+): Promise<ValidatedFetchTarget & { addresses?: LookupAddress[] }> {
   const {
     httpsOnly = false,
     allowedHosts,
@@ -181,7 +196,7 @@ export async function assertUrlIsSafeToFetch(
     );
   }
 
-  return { url, hostname };
+  return { url, hostname, addresses: safety.addresses };
 }
 
 /**
