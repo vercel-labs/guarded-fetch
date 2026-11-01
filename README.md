@@ -267,6 +267,10 @@ Only DNS is consulted: `/etc/hosts`, nsswitch, and resolv.conf `search`
 domains are not. Nameservers come from the system configuration, or from
 `dns.setServers()` if you call it.
 
+Concurrent resolutions of the same host share one query. Answers are reused
+for their record TTL, capped at 30 seconds, and failures for 2 seconds. A
+reused answer is validated like a fresh one.
+
 ### Using `createGuardedLookup` on its own
 
 A `dns.lookup` function only runs when the host actually needs resolving.
