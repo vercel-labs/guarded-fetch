@@ -1,3 +1,5 @@
+import type { LookupAddress } from 'node:dns';
+
 import {
   fetch as undiciFetch,
   getGlobalDispatcher,
@@ -6,7 +8,7 @@ import {
 } from 'undici';
 
 import {
-  assertUrlIsSafeToFetch,
+  validateFetchTarget,
   type AssertUrlSafeOptions,
 } from './assert-url-safe';
 import {
@@ -16,6 +18,7 @@ import {
   GuardedFetchErrorCode,
 } from './errors';
 import { getSharedGuardedDispatcher } from './guarded-dispatcher';
+import { withPinnedAddresses } from './pinned-addresses';
 import { rejectEncoding } from './reject-encoding';
 import { sanitizeRequestHeaders } from './sanitize-headers';
 import { recordUrlBlocked } from './url-blocked';
@@ -227,8 +230,8 @@ export async function guardedFetch(
     : controller.signal;
 
   try {
-    const { url } = await withDeadline(
-      assertUrlIsSafeToFetch(rawUrl, assertOptions),
+    const { url, addresses } = await withDeadline(
+      validateFetchTarget(rawUrl, assertOptions),
       signal,
     );
     validatedUrl = url;
@@ -254,6 +257,7 @@ export async function guardedFetch(
 
     return await followChain({
       url,
+      addresses,
       method: method ?? 'GET',
       body,
       headers: outboundHeaders,
@@ -308,6 +312,7 @@ async function withDeadline<T>(
 
 async function followChain(params: {
   url: URL;
+  addresses: LookupAddress[] | undefined;
   method: string;
   body: FetchBody | null | undefined;
   headers: Headers;
@@ -322,6 +327,7 @@ async function followChain(params: {
 }): Promise<Response> {
   let {
     url: currentUrl,
+    addresses: currentAddresses,
     method: currentMethod,
     body: currentBody,
     headers: currentHeaders,
@@ -340,6 +346,7 @@ async function followChain(params: {
   for (let hop = 0; hop <= maxRedirects; hop += 1) {
     const response = await executeFetch({
       url: currentUrl,
+      addresses: currentAddresses,
       method: currentMethod,
       body: currentBody,
       headers: currentHeaders,
@@ -420,10 +427,10 @@ async function followChain(params: {
     try {
       // Same deadline as the initial check — a redirect target's DNS is just
       // as attacker-influenced as the original URL's.
-      await withDeadline(
-        assertUrlIsSafeToFetch(nextUrl, assertOptions),
+      ({ addresses: currentAddresses } = await withDeadline(
+        validateFetchTarget(nextUrl, assertOptions),
         signal,
-      );
+      ));
     } catch (error) {
       if (
         error instanceof GuardedFetchError &&
@@ -489,6 +496,8 @@ async function followChain(params: {
 
 async function executeFetch(params: {
   url: URL;
+  /** Validated DNS answer for `url`'s host, reused at connect time. */
+  addresses: LookupAddress[] | undefined;
   method: string;
   body: FetchBody | null | undefined;
   headers: Headers;
@@ -500,6 +509,7 @@ async function executeFetch(params: {
 }): Promise<Response> {
   const {
     url,
+    addresses,
     method,
     body,
     headers,
@@ -523,7 +533,9 @@ async function executeFetch(params: {
   }
 
   try {
-    return await fetchImpl(url.toString(), fetchInit);
+    return await withPinnedAddresses(url.hostname, addresses, () =>
+      fetchImpl(url.toString(), fetchInit),
+    );
   } catch (error) {
     // AbortError — surface as TIMEOUT if we raised it via our own reason,
     // otherwise as NETWORK_ERROR to preserve caller intent.
