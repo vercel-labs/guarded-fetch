@@ -32,20 +32,35 @@ export type HostnameSafetyResult =
   | { safe: false; subReason: HostnameUnsafeSubReasonType };
 
 /**
- * Classifies whether `hostname` is safe for server-side outbound HTTP(S).
- * Uses the same OS resolver path that undici's connect-time lookup uses.
+ * Checks that need no DNS: reserved names and IP literals. Returns `undefined`
+ * when the answer depends on what the name resolves to.
+ *
+ * Shared by {@link checkHostnameSafetyForServerSideFetch} and
+ * `createGuardedFetch`, which leaves DNS to the connector, so both entry
+ * points block the same names. Trailing dots are ignored for the name checks
+ * (`localhost.` is still `localhost`).
  */
-export async function checkHostnameSafetyForServerSideFetch(
+export function classifyHostnameWithoutDns(
   hostname: string,
-): Promise<HostnameSafetyResult> {
-  const host = hostname.toLowerCase().replace(/^\[/, '').replace(/\]$/, '');
+): HostnameSafetyResult | undefined {
+  const host = hostname
+    .toLowerCase()
+    .replace(/^\[/, '')
+    .replace(/\]$/, '')
+    .replace(/\.+$/, '');
   if (!host) {
     return { safe: false, subReason: HostnameUnsafeSubReason.INVALID };
   }
   if (host === 'localhost' || host.endsWith('.localhost')) {
     return { safe: false, subReason: HostnameUnsafeSubReason.LOCALHOST };
   }
-  if (host.endsWith('.local')) {
+  // `.local` is mDNS; `.internal` is reserved for private use (ICANN, 2024).
+  if (
+    host === 'local' ||
+    host.endsWith('.local') ||
+    host === 'internal' ||
+    host.endsWith('.internal')
+  ) {
     return { safe: false, subReason: HostnameUnsafeSubReason.LOCAL_DOMAIN };
   }
 
@@ -55,6 +70,24 @@ export async function checkHostnameSafetyForServerSideFetch(
       : { safe: true };
   }
 
+  return undefined;
+}
+
+/**
+ * Classifies whether `hostname` is safe for server-side outbound HTTP(S).
+ * Uses the same OS resolver path that undici's connect-time lookup uses.
+ */
+export async function checkHostnameSafetyForServerSideFetch(
+  hostname: string,
+): Promise<HostnameSafetyResult> {
+  const withoutDns = classifyHostnameWithoutDns(hostname);
+  if (withoutDns) {
+    return withoutDns;
+  }
+
+  // Resolve the name as given: `intranet.` and `intranet` can resolve
+  // differently once resolver search domains apply.
+  const host = hostname.toLowerCase();
   let addresses: LookupAddress[];
   try {
     addresses = await lookup(host, { all: true, verbatim: true });

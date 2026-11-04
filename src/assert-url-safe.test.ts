@@ -77,14 +77,14 @@ describe(assertUrlIsSafeToFetch, () => {
   it('rejects when hostname fails SSRF check', async () => {
     mockLookup.mockResolvedValueOnce([{ address: '10.0.0.1', family: 4 }]);
     await expect(
-      assertUrlIsSafeToFetch('https://metadata.internal'),
+      assertUrlIsSafeToFetch('https://metadata.attacker.example'),
     ).rejects.toMatchObject({
       code: GuardedFetchErrorCode.HOSTNAME_UNSAFE,
-      hostname: 'metadata.internal',
+      hostname: 'metadata.attacker.example',
     });
     expect(blockedEvents).toHaveBeenCalledWith({
       reason: GuardedFetchErrorCode.HOSTNAME_UNSAFE,
-      domain: 'metadata.internal',
+      domain: 'metadata.attacker.example',
       subReason: HostnameUnsafeSubReason.DNS_UNSAFE_ADDRESS,
     });
   });
