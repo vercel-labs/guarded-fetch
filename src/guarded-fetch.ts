@@ -16,7 +16,7 @@ import {
   GuardedFetchErrorCode,
 } from './errors';
 import { getSharedGuardedDispatcher } from './guarded-dispatcher';
-import { rejectEncoding } from './reject-encoding';
+import { acceptEncodingWithout, rejectEncoding } from './reject-encoding';
 import { sanitizeRequestHeaders } from './sanitize-headers';
 import { recordUrlBlocked } from './url-blocked';
 
@@ -276,7 +276,10 @@ export async function guardedFetch(
       blockedEncodings.length > 0 &&
       !outboundHeaders.has('accept-encoding')
     ) {
-      outboundHeaders.set('accept-encoding', acceptEncoding(blockedEncodings));
+      outboundHeaders.set(
+        'accept-encoding',
+        acceptEncodingWithout(blockedEncodings),
+      );
     }
 
     return await followChain({
@@ -611,15 +614,6 @@ async function executeFetch(params: {
       { hostname: url.hostname, url: url.toString(), cause: error },
     );
   }
-}
-
-const DEFAULT_ACCEPT_ENCODINGS = ['br', 'gzip', 'deflate'];
-
-/** undici's default `Accept-Encoding` list without the blocked codings. */
-function acceptEncoding(blocked: readonly string[]): string {
-  const lower = new Set(blocked.map((coding) => coding.toLowerCase()));
-  const allowed = DEFAULT_ACCEPT_ENCODINGS.filter((c) => !lower.has(c));
-  return allowed.length > 0 ? allowed.join(', ') : 'identity';
 }
 
 function isRedirect(status: number): boolean {

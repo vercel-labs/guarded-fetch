@@ -91,7 +91,7 @@ describe(checkHostnameSafetyForServerSideFetch, () => {
   it('classifies private addresses from DNS', async () => {
     mockLookup.mockResolvedValueOnce([{ address: '10.0.0.1', family: 4 }]);
     await expect(
-      checkHostnameSafetyForServerSideFetch('metadata.internal'),
+      checkHostnameSafetyForServerSideFetch('metadata.attacker.example'),
     ).resolves.toEqual({
       safe: false,
       subReason: HostnameUnsafeSubReason.DNS_UNSAFE_ADDRESS,
@@ -104,6 +104,30 @@ describe(checkHostnameSafetyForServerSideFetch, () => {
       checkHostnameSafetyForServerSideFetch('example.com'),
     ).resolves.toEqual({
       safe: true,
+    });
+  });
+
+  it.each([
+    ['localhost.', HostnameUnsafeSubReason.LOCALHOST],
+    ['local', HostnameUnsafeSubReason.LOCAL_DOMAIN],
+    ['server.local.', HostnameUnsafeSubReason.LOCAL_DOMAIN],
+    ['internal', HostnameUnsafeSubReason.LOCAL_DOMAIN],
+    ['metadata.google.internal', HostnameUnsafeSubReason.LOCAL_DOMAIN],
+  ])('classifies %s by name without DNS', async (hostname, subReason) => {
+    await expect(
+      checkHostnameSafetyForServerSideFetch(hostname),
+    ).resolves.toEqual({ safe: false, subReason });
+    expect(mockLookup).not.toHaveBeenCalled();
+  });
+
+  it('resolves a trailing-dot name as given', async () => {
+    mockLookup.mockResolvedValueOnce([{ address: '8.8.8.8', family: 4 }]);
+    await expect(
+      checkHostnameSafetyForServerSideFetch('example.com.'),
+    ).resolves.toEqual({ safe: true });
+    expect(mockLookup).toHaveBeenCalledWith('example.com.', {
+      all: true,
+      verbatim: true,
     });
   });
 });
