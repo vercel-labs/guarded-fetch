@@ -271,6 +271,36 @@ describe('createGuardedFetch', () => {
     await expect(fetch(origin)).rejects.toThrow();
   });
 
+  it('sends Accept-Encoding without blocked codings', async () => {
+    // undici advertises `gzip, deflate` over plain HTTP, so block `gzip`:
+    // blocking `br` here would pass even without the guard.
+    const fetch = create({
+      trustedOrigins: [origin],
+      blockedEncodings: ['GZIP'],
+    });
+    await (await fetch(origin)).text();
+    await (await fetch(new Request(origin))).text();
+    await (await fetch(origin, { headers: { 'x-trace': '1' } })).text();
+    expect(onRequest).toHaveBeenCalledTimes(3);
+    for (const [headers] of onRequest.mock.calls) {
+      const codings = String(headers['accept-encoding']).split(/,\s*/);
+      expect(codings).toContain('deflate');
+      expect(codings).not.toContain('gzip');
+    }
+    expect(onRequest.mock.calls[2]?.[0]['x-trace']).toBe('1');
+  });
+
+  it('keeps a caller-set Accept-Encoding when codings are blocked', async () => {
+    const fetch = create({
+      trustedOrigins: [origin],
+      blockedEncodings: ['br'],
+    });
+    await (
+      await fetch(origin, { headers: { 'Accept-Encoding': 'identity' } })
+    ).text();
+    expect(onRequest.mock.calls[0]?.[0]['accept-encoding']).toBe('identity');
+  });
+
   it.each(['file:///tmp/file', 'https://user:password@example.com/'])(
     'rejects an invalid trusted origin %s',
     (trustedOrigin) => {

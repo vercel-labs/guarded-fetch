@@ -1,5 +1,6 @@
 import {
   Agent,
+  type Dispatcher,
   FormData as UndiciFormData,
   fetch as undiciFetch,
   type RequestInit,
@@ -8,6 +9,7 @@ import {
 import { GuardedFetchError, GuardedFetchErrorCode } from './errors';
 import { createGuardedDispatcher } from './guarded-dispatcher';
 import { classifyHostnameWithoutDns } from './hostname-safety';
+import { acceptEncodingWithout, rejectEncoding } from './reject-encoding';
 import { recordUrlBlocked } from './url-blocked';
 
 export type CreateGuardedFetchOptions = {
@@ -17,6 +19,21 @@ export type CreateGuardedFetchOptions = {
    * the exemption covers the entire exact origin (scheme, host, and port).
    */
   trustedOrigins?: readonly string[];
+
+  /**
+   * Response content codings to reject, for example `['br']` on Node versions
+   * that have the brotli decoder bug (CVE-2026-111497). Applies to trusted
+   * origins too.
+   *
+   * When set, requests send an `Accept-Encoding` without those codings unless
+   * the caller set that header. A response that lists one of them in
+   * `Content-Encoding` is aborted before any body byte reaches the decoder,
+   * and the call rejects with a {@link GuardedFetchError} whose code is
+   * `RESPONSE_ENCODING_NOT_ALLOWED` (on `.cause`, like connect-time errors).
+   *
+   * @default []
+   */
+  blockedEncodings?: readonly string[];
 };
 
 export type GuardedFetch = typeof globalThis.fetch & {
@@ -42,6 +59,7 @@ export type GuardedFetch = typeof globalThis.fetch & {
  */
 export function createGuardedFetch({
   trustedOrigins = [],
+  blockedEncodings = [],
 }: CreateGuardedFetchOptions = {}): GuardedFetch {
   const origins = new Set(
     trustedOrigins.map((origin) => {
@@ -60,6 +78,18 @@ export function createGuardedFetch({
   );
   const guardedAgent = createGuardedDispatcher();
   const trustedAgent = origins.size === 0 ? undefined : new Agent();
+  // The interceptor sees response headers before fetch picks a decoder, so a
+  // server cannot reach the decoder by ignoring `Accept-Encoding`.
+  const withEncodingGuard = (agent: Agent): Dispatcher =>
+    blockedEncodings.length === 0
+      ? agent
+      : agent.compose(rejectEncoding(blockedEncodings));
+  const guardedDispatcher = withEncodingGuard(guardedAgent);
+  const trustedDispatcher = trustedAgent && withEncodingGuard(trustedAgent);
+  const acceptEncoding =
+    blockedEncodings.length === 0
+      ? undefined
+      : acceptEncodingWithout(blockedEncodings);
   let closePromise: Promise<void> | undefined;
 
   const guardedFetch: typeof globalThis.fetch = async (input, init) => {
@@ -127,11 +157,23 @@ export function createGuardedFetch({
             redirect: request.redirect,
           };
 
+    let headers = requestInit.headers;
+    if (acceptEncoding !== undefined) {
+      const outbound = new Headers(
+        headers as ConstructorParameters<typeof Headers>[0] | undefined,
+      );
+      if (!outbound.has('accept-encoding')) {
+        outbound.set('accept-encoding', acceptEncoding);
+      }
+      headers = [...outbound];
+    }
+
     return (await undiciFetch(url, {
       ...requestInit,
+      headers,
       redirect: requestInit.redirect === 'manual' ? 'manual' : 'error',
       // Never accept a caller-supplied dispatcher that could bypass the guard.
-      dispatcher: trusted ? trustedAgent : guardedAgent,
+      dispatcher: trusted ? trustedDispatcher : guardedDispatcher,
     })) as unknown as Response;
   };
 

@@ -69,3 +69,12 @@ export function rejectEncoding(
   return (dispatch) => (opts, handler) =>
     dispatch(opts, new RejectEncodingHandler(handler, blocked));
 }
+
+const DEFAULT_ACCEPT_ENCODINGS = ['br', 'gzip', 'deflate'];
+
+/** undici's default `Accept-Encoding` list without the blocked codings. */
+export function acceptEncodingWithout(blocked: readonly string[]): string {
+  const lower = new Set(blocked.map((coding) => coding.toLowerCase()));
+  const allowed = DEFAULT_ACCEPT_ENCODINGS.filter((c) => !lower.has(c));
+  return allowed.length > 0 ? allowed.join(', ') : 'identity';
+}

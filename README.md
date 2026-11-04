@@ -85,6 +85,7 @@ Unlike `guardedFetch`, it leaves request policy to the caller:
 | Timeout                         | `timeoutMs` (10 s default)         | None — pass a `signal`                                     |
 | Response size limit             | With the JSON/text wrappers        | None                                                       |
 | `opaqueErrors` / `onUrlBlocked` | Yes                                | No (module-level `setUrlBlockedHandler` only)              |
+| `blockedEncodings`              | Yes                                | Yes (trusted origins too)                                  |
 | Error on a connect-time block   | `GuardedFetchError`                | `TypeError: fetch failed`, `GuardedFetchError` on `.cause` |
 
 The default `redirect: 'follow'` is treated as `'error'`. With
@@ -183,11 +184,16 @@ you can mitigate this attack by blocking `br` encoding:
 
 ```ts
 await guardedFetch(url, { blockedEncodings: ['br'] });
+
+// The SDK transport takes the same option:
+const fetch = createGuardedFetch({ blockedEncodings: ['br'] });
 ```
 
 The request sends `Accept-Encoding: gzip, deflate`. A server that still
 responds with `Content-Encoding: br` is aborted before any byte reaches the
-decoder, and the call throws `response_encoding_not_allowed`.
+decoder, and the call throws `response_encoding_not_allowed`. With
+`createGuardedFetch`, the call rejects with `TypeError: fetch failed` and that
+`GuardedFetchError` on `.cause`.
 
 _Note that using custom fetcher will not work with this_
 
