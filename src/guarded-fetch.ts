@@ -688,11 +688,13 @@ function dropContentHeaders(headers: Headers): Headers {
 /**
  * Headers that survive a cross-origin redirect. They describe the request and
  * its body, never the caller's identity, so the next origin can still parse a
- * 307/308 body. Everything else — including custom API-key headers — is
- * dropped.
+ * 307/308 body. `Accept-Encoding` stays so the next origin cannot pick a
+ * coding that `blockedEncodings` would then reject. Everything else —
+ * including custom API-key headers — is dropped.
  */
 const CROSS_ORIGIN_REDIRECT_HEADERS: ReadonlySet<string> = new Set([
   'accept',
+  'accept-encoding',
   'accept-language',
   'content-encoding',
   'content-language',

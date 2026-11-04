@@ -136,6 +136,34 @@ describe('standard redirect policies', () => {
     });
   });
 
+  it.each([
+    ['blockedEncodings', { blockedEncodings: ['br'] }, 'gzip, deflate'],
+    [
+      'a caller header',
+      { headers: { 'accept-encoding': 'identity' } },
+      'identity',
+    ],
+  ] as const)(
+    'keeps Accept-Encoding from %s on a cross-origin hop',
+    async (_source, options, expected) => {
+      // Dropping it would let the next origin choose a coding that
+      // `blockedEncodings` then rejects.
+      const fetch = vi
+        .fn()
+        .mockResolvedValueOnce(
+          new Response(null, {
+            status: 302,
+            headers: { location: 'https://8.8.8.8/next' },
+          }),
+        )
+        .mockResolvedValueOnce(new Response('ok'));
+      await guardedFetch(start, { fetch, ...options });
+      for (const [, init] of fetch.mock.calls) {
+        expect(new Headers(init.headers).get('accept-encoding')).toBe(expected);
+      }
+    },
+  );
+
   it('keeps every caller header on a same-origin redirect', async () => {
     const fetch = vi
       .fn()

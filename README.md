@@ -77,16 +77,17 @@ without DNS or a network connection.
 
 Unlike `guardedFetch`, it leaves request policy to the caller:
 
-| Behavior                        | `guardedFetch`                     | `createGuardedFetch()`                                     |
-| ------------------------------- | ---------------------------------- | ---------------------------------------------------------- |
-| URL, IP-literal, and DNS checks | Yes (preflight + connect-time pin) | Yes (connect-time pin only)                                |
-| Redirects                       | Followed, every hop re-validated   | Not followed — `'manual'` or `'error'`                     |
-| Header sanitization             | Yes                                | No                                                         |
-| Timeout                         | `timeoutMs` (10 s default)         | None — pass a `signal`                                     |
-| Response size limit             | With the JSON/text wrappers        | None                                                       |
-| `opaqueErrors` / `onUrlBlocked` | Yes                                | No (module-level `setUrlBlockedHandler` only)              |
-| `blockedEncodings`              | Yes                                | Yes (trusted origins too)                                  |
-| Error on a connect-time block   | `GuardedFetchError`                | `TypeError: fetch failed`, `GuardedFetchError` on `.cause` |
+| Behavior                        | `guardedFetch`                                                 | `createGuardedFetch()`                                         |
+| ------------------------------- | -------------------------------------------------------------- | -------------------------------------------------------------- |
+| URL, IP-literal, and DNS checks | Yes (preflight + connect-time pin)                             | Yes (connect-time pin only)                                    |
+| Redirects                       | `redirect` option; `'follow'` (default) re-validates every hop | Not followed — `'manual'` or `'error'`                         |
+| Header sanitization             | Yes                                                            | No                                                             |
+| Timeout                         | `timeoutMs` (10 s default)                                     | None — pass a `signal`                                         |
+| Response size limit             | With the JSON/text wrappers                                    | None                                                           |
+| `opaqueErrors` / `onUrlBlocked` | Yes                                                            | No (module-level `setUrlBlockedHandler` only)                  |
+| `blockedEncodings`              | Yes                                                            | Yes (trusted origins too)                                      |
+| Error on a connect-time block   | `GuardedFetchError`                                            | `TypeError: fetch failed`, `GuardedFetchError` on `.cause`     |
+| Error on a refused redirect     | `GuardedFetchError` `redirect_not_allowed`                     | `TypeError: fetch failed`, plain `Error` on `.cause` (no code) |
 
 The default `redirect: 'follow'` is treated as `'error'`. With
 `redirect: 'manual'` the 3xx response is returned, and the caller must validate
@@ -115,7 +116,7 @@ transport and call its idempotent `close()` after consuming all responses.
 | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Protocol allowlist      | Only `http:` and `https:` URLs are accepted.                                                                                                                                     |
 | SSRF DNS check          | The hostname is DNS-resolved before connecting; private, loopback, link-local, CGNAT, and cloud-metadata addresses are rejected. `localhost` and `*.local` are rejected by name. |
-| Connect-time IP pinning | The resolved IP is re-validated _inside_ the socket connect, so a DNS server can't swap in a private IP between the check and the connection (DNS rebinding).                    |
+| Connect-time IP pinning | Every resolved IP is re-validated _inside_ the socket connect, so a DNS server can't swap in a private IP between the check and the connection (DNS rebinding).                  |
 | Header sanitization     | `Host`, `Cookie`, `X-Forwarded-*`, cloud-metadata headers, and other dangerous headers are silently stripped from your request.                                                  |
 | Safe redirects          | Redirects are followed manually (max 5 hops) and every hop re-runs all of the checks above.                                                                                      |
 | Credential stripping    | Only `Accept*`, `Content-Type/Language/Encoding`, and `User-Agent` survive a redirect that crosses origins; custom API-key headers are dropped.                                  |
@@ -239,8 +240,8 @@ wrappers.
 Always on, not configurable:
 
 - **Credential stripping on cross-origin redirects** — only `Accept`,
-  `Accept-Language`, `Content-Type`, `Content-Language`, `Content-Encoding`,
-  and `User-Agent` are kept; every other caller header, including custom
+  `Accept-Encoding`, `Accept-Language`, `Content-Type`, `Content-Language`,
+  `Content-Encoding`, and `User-Agent` are kept; every other caller header, including custom
   provider API-key headers, is dropped.
 - **RFC 7231 redirect normalization** — 301/302/303 responses convert the
   method to `GET` and drop the body (307/308 preserve both).
