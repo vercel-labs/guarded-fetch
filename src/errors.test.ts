@@ -55,6 +55,7 @@ describe(isPermanentGuardedFetchError, () => {
     GuardedFetchErrorCode.REDIRECT_INVALID,
     GuardedFetchErrorCode.REDIRECT_TO_UNSAFE_HOST,
     GuardedFetchErrorCode.RESPONSE_TOO_LARGE,
+    GuardedFetchErrorCode.RESPONSE_ENCODING_NOT_ALLOWED,
   ])('treats %s as permanent', (code) => {
     expect(isPermanentGuardedFetchError(new GuardedFetchError(code, 'x'))).toBe(
       true,

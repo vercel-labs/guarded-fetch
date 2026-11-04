@@ -1,4 +1,5 @@
 import dns from 'node:dns';
+import net from 'node:net';
 
 import {
   OPAQUE_ERROR_MESSAGE,
@@ -38,8 +39,8 @@ type LookupCallback = (
  *
  * The returned function:
  * - Delegates the actual resolution to Node's `dns.lookup`.
- * - In single-result mode (`all` unset/false), validates the one returned IP.
- * - In `all: true` mode, validates **every** returned IP.
+ * - Always resolves and validates **every** returned IP before connecting.
+ * - Returns one address or the whole list, matching the connector's `all` option.
  * - On any unsafe IP, invokes the callback with a {@link GuardedFetchError}
  *   whose `code` is `HOSTNAME_UNSAFE`. The socket `connect` then fails.
  *
@@ -71,13 +72,14 @@ export function createGuardedLookup(
 
   const reject = (
     hostname: string,
-    address: string,
+    message: string,
+    subReason: HostnameUnsafeSubReason,
     cb: LookupCallback,
   ): void => {
     recordUrlBlocked(
       GuardedFetchErrorCode.HOSTNAME_UNSAFE,
       hostname.toLowerCase(),
-      HostnameUnsafeSubReason.CONNECT_TIME_IP_REJECTED,
+      subReason,
     );
     // We pass a `GuardedFetchError` up through the `dns.lookup` callback; this
     // causes the socket `connect` to fail and the error to bubble up through
@@ -87,44 +89,60 @@ export function createGuardedLookup(
     // string — doing so would shadow the GuardedFetchErrorCode on the class.
     const err = new GuardedFetchError(
       GuardedFetchErrorCode.HOSTNAME_UNSAFE,
-      opaqueErrors
-        ? OPAQUE_ERROR_MESSAGE
-        : `Refusing to connect to ${address}: private, loopback, or link-local address.`,
+      opaqueErrors ? OPAQUE_ERROR_MESSAGE : message,
       { hostname },
     );
     cb(err as unknown as NodeJS.ErrnoException, '', 0);
   };
 
   return function guardedLookup(hostname, opts, callback) {
-    dns.lookup(
-      hostname,
-      // `dns.lookup`'s overloads differ on the 2nd arg; passing through is
-      // safe because we never construct this value ourselves.
-      opts as dns.LookupOneOptions,
-      (err, address, family) => {
-        if (err) {
-          callback(err, address as string, family);
+    const lookupOptions = typeof opts === 'number' ? { family: opts } : opts;
+    dns.lookup(hostname, { ...lookupOptions, all: true }, (err, addresses) => {
+      if (err) {
+        callback(err, '');
+        return;
+      }
+
+      const first = Array.isArray(addresses) ? addresses[0] : undefined;
+      if (!first) {
+        reject(
+          hostname,
+          `Refusing to connect to "${hostname}": DNS returned no addresses.`,
+          HostnameUnsafeSubReason.DNS_RESOLUTION_FAILED,
+          callback,
+        );
+        return;
+      }
+
+      for (const entry of addresses) {
+        if (
+          (entry.family !== 4 && entry.family !== 6) ||
+          net.isIP(entry.address) !== entry.family
+        ) {
+          reject(
+            hostname,
+            `Refusing to connect to "${hostname}": DNS returned a malformed address.`,
+            HostnameUnsafeSubReason.DNS_RESOLUTION_FAILED,
+            callback,
+          );
           return;
         }
-
-        if (Array.isArray(address)) {
-          for (const entry of address) {
-            if (!isSafeIpAddress(entry.address)) {
-              reject(hostname, entry.address, callback);
-              return;
-            }
-          }
-          callback(null, address);
+        if (!isSafeIpAddress(entry.address)) {
+          reject(
+            hostname,
+            `Refusing to connect to ${entry.address}: private, loopback, or link-local address.`,
+            HostnameUnsafeSubReason.CONNECT_TIME_IP_REJECTED,
+            callback,
+          );
           return;
         }
+      }
 
-        if (typeof address === 'string' && !isSafeIpAddress(address)) {
-          reject(hostname, address, callback);
-          return;
-        }
-
-        callback(null, address as string, family);
-      },
-    );
+      if (lookupOptions?.all) {
+        callback(null, addresses);
+      } else {
+        callback(null, first.address, first.family);
+      }
+    });
   };
 }

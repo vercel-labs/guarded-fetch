@@ -67,6 +67,8 @@ describe(isAddressUnsafeForServerSideFetch, () => {
     ['fec0::1', 'deprecated site-local fec0::/10'],
     ['ff02::1', 'multicast ff00::/8'],
     ['2001:db8::1', 'documentation 2001:db8::/32'],
+    ['3fff::1', 'documentation 3fff::/20'],
+    ['3fff:fff:ffff:ffff:ffff:ffff:ffff:ffff', 'documentation upper boundary'],
     ['::', 'unspecified'],
   ])('blocks unsafe IPv6: %s (%s)', (address: string) => {
     expect(isAddressUnsafeForServerSideFetch(address)).toBe(true);
@@ -83,6 +85,7 @@ describe(isAddressUnsafeForServerSideFetch, () => {
     ['2002:0a00:0001::', '6to4 RFC1918'],
     ['64:ff9b::a9fe:a9fe', 'NAT64 metadata'],
     ['64:ff9b::7f00:0001', 'NAT64 loopback'],
+    ['0:0:0:0:0:ffff:7f00:1', 'expanded mapped loopback'],
   ])('blocks embedded IPv4 in IPv6 encodings: %s (%s)', (address: string) => {
     expect(isAddressUnsafeForServerSideFetch(address)).toBe(true);
     expect(isSafeIpAddress(address)).toBe(false);
@@ -96,6 +99,22 @@ describe(isAddressUnsafeForServerSideFetch, () => {
     (address: string) => {
       expect(isAddressUnsafeForServerSideFetch(address)).toBe(false);
       expect(isSafeIpAddress(address)).toBe(true);
+    },
+  );
+
+  // Deprecated IPv4-compatible and SIIT-translated forms are rejected as whole
+  // ranges, including when the embedded IPv4 is public.
+  it.each([
+    ['::7f00:1', 'IPv4-compatible loopback'],
+    ['::a9fe:a9fe', 'IPv4-compatible metadata'],
+    ['::808:808', 'IPv4-compatible public'],
+    ['::ffff:0:7f00:1', 'translated loopback'],
+    ['::ffff:0:808:808', 'translated public'],
+  ])(
+    'blocks IPv4-compatible and translated ranges: %s (%s)',
+    (address: string) => {
+      expect(isAddressUnsafeForServerSideFetch(address)).toBe(true);
+      expect(isSafeIpAddress(address)).toBe(false);
     },
   );
 
@@ -120,6 +139,7 @@ describe(isAddressUnsafeForServerSideFetch, () => {
   it.each([
     ['64:ff9b:10::0808:0808', 'distinct prefix, not 64:ff9b:1::/48'],
     ['64:ff9c:1::0808:0808', 'distinct prefix, not NAT64'],
+    ['3fff:1000::1', 'outside 3fff::/20 documentation range'],
   ])(
     'does not over-block neighbouring prefixes: %s (%s)',
     (address: string) => {

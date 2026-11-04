@@ -5,6 +5,7 @@ import {
   type ServerResponse,
 } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { brotliCompressSync } from 'node:zlib';
 
 import { Headers, Request } from 'undici';
 import { describe, expect, it } from 'vitest';
@@ -804,5 +805,128 @@ describe('guardedFetch HTTP integration behavior', () => {
     } finally {
       await server.close();
     }
+  });
+
+  describe('blockedEncodings', () => {
+    const brotliBody = brotliCompressSync('compressed');
+    const noBrotli = (overrides: GuardedFetchOptions = {}) =>
+      options({ blockedEncodings: ['br'], ...overrides });
+
+    it('sends Accept-Encoding without br', async () => {
+      const server = await startTestServer((_req, res) => {
+        res.end('ok');
+      });
+
+      try {
+        await guardedFetch(`${server.baseUrl}/`, noBrotli());
+        expect(server.requests[0]?.headers['accept-encoding']).toBe(
+          'gzip, deflate',
+        );
+      } finally {
+        await server.close();
+      }
+    });
+
+    it('keeps a caller-provided Accept-Encoding', async () => {
+      const server = await startTestServer((_req, res) => {
+        res.end('ok');
+      });
+
+      try {
+        await guardedFetch(
+          `${server.baseUrl}/`,
+          noBrotli({ headers: { 'Accept-Encoding': 'identity' } }),
+        );
+        expect(server.requests[0]?.headers['accept-encoding']).toBe('identity');
+      } finally {
+        await server.close();
+      }
+    });
+
+    it('rejects a br response that was not requested', async () => {
+      const server = await startTestServer((_req, res) => {
+        res.setHeader('content-encoding', 'br');
+        res.end(brotliBody);
+      });
+
+      try {
+        await expect(
+          guardedFetch(`${server.baseUrl}/`, noBrotli()),
+        ).rejects.toMatchObject({
+          code: GuardedFetchErrorCode.RESPONSE_ENCODING_NOT_ALLOWED,
+        });
+      } finally {
+        await server.close();
+      }
+    });
+
+    it('rejects a br redirect response', async () => {
+      const server = await startTestServer((_req, res) => {
+        res.statusCode = 302;
+        res.setHeader('location', '/final');
+        res.setHeader('content-encoding', 'br');
+        res.end(brotliBody);
+      });
+
+      try {
+        await expect(
+          guardedFetch(`${server.baseUrl}/start`, noBrotli()),
+        ).rejects.toMatchObject({
+          code: GuardedFetchErrorCode.RESPONSE_ENCODING_NOT_ALLOWED,
+        });
+        expect(server.requests.map((req) => req.url)).toEqual(['/start']);
+      } finally {
+        await server.close();
+      }
+    });
+
+    it('uses the opaque message when opaqueErrors is set', async () => {
+      const server = await startTestServer((_req, res) => {
+        res.setHeader('content-encoding', 'br');
+        res.end(brotliBody);
+      });
+
+      try {
+        await expect(
+          guardedFetch(`${server.baseUrl}/`, noBrotli({ opaqueErrors: true })),
+        ).rejects.toMatchObject({
+          code: GuardedFetchErrorCode.RESPONSE_ENCODING_NOT_ALLOWED,
+          message: OPAQUE_ERROR_MESSAGE,
+        });
+      } finally {
+        await server.close();
+      }
+    });
+
+    it('sends identity when every default coding is blocked', async () => {
+      const server = await startTestServer((_req, res) => {
+        res.end('ok');
+      });
+
+      try {
+        await guardedFetch(
+          `${server.baseUrl}/`,
+          options({ blockedEncodings: ['br', 'gzip', 'deflate'] }),
+        );
+        expect(server.requests[0]?.headers['accept-encoding']).toBe('identity');
+      } finally {
+        await server.close();
+      }
+    });
+
+    it('decodes br by default', async () => {
+      const server = await startTestServer((_req, res) => {
+        res.setHeader('content-encoding', 'br');
+        res.end(brotliBody);
+      });
+
+      try {
+        await expect(
+          guardedFetchText(`${server.baseUrl}/`, bodyOptions()),
+        ).resolves.toBe('compressed');
+      } finally {
+        await server.close();
+      }
+    });
   });
 });
