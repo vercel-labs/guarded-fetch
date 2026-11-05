@@ -1,4 +1,3 @@
-import dns from 'node:dns';
 import { createServer, type Server } from 'node:http';
 
 import { Request as UndiciRequest } from 'undici';
@@ -6,6 +5,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createGuardedFetch, type GuardedFetch } from './create-guarded-fetch';
 import { GuardedFetchError } from './errors';
+import { resolveHost } from './resolve-host';
+
+// Pass-through by default; `mockPrivateDns` overrides it per test.
+vi.mock('./resolve-host', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./resolve-host')>();
+  return { ...actual, resolveHost: vi.fn(actual.resolveHost) };
+});
+const realResolveHost = (
+  await vi.importActual<typeof import('./resolve-host')>('./resolve-host')
+).resolveHost;
 
 let server: Server;
 let origin: string;
@@ -14,16 +23,9 @@ const onConnection = vi.fn();
 const onRequest = vi.fn();
 
 function mockPrivateDns() {
-  return vi.spyOn(dns, 'lookup').mockImplementation(((
-    _host: string,
-    _options: dns.LookupOptions,
-    callback: (
-      error: NodeJS.ErrnoException | null,
-      addresses: dns.LookupAddress[],
-    ) => void,
-  ) => {
-    queueMicrotask(() => callback(null, [{ address: '127.0.0.1', family: 4 }]));
-  }) as typeof dns.lookup);
+  return vi
+    .mocked(resolveHost)
+    .mockResolvedValue([{ address: '127.0.0.1', family: 4 }]);
 }
 
 function create(options?: Parameters<typeof createGuardedFetch>[0]) {
@@ -66,6 +68,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.mocked(resolveHost).mockReset().mockImplementation(realResolveHost);
   await Promise.all(transports.splice(0).map((fetch) => fetch.close()));
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -92,8 +95,7 @@ describe('createGuardedFetch', () => {
     });
     expect(lookup).toHaveBeenCalledExactlyOnceWith(
       'files.example.com',
-      expect.objectContaining({ all: true }),
-      expect.any(Function),
+      expect.objectContaining({ family: 0 }),
     );
     expect(globalFetch).not.toHaveBeenCalled();
     expect(onConnection).not.toHaveBeenCalled();

@@ -1,4 +1,4 @@
-import dns from 'node:dns';
+import type dns from 'node:dns';
 import net from 'node:net';
 
 import {
@@ -7,6 +7,7 @@ import {
   GuardedFetchErrorCode,
 } from './errors';
 import { isSafeIpAddress } from './ip-address';
+import { resolveHost } from './resolve-host';
 import { HostnameUnsafeSubReason, recordUrlBlocked } from './url-blocked';
 
 export interface GuardedLookupOptions {
@@ -38,7 +39,8 @@ type LookupCallback = (
  * again → connect" sequence leaves open.
  *
  * The returned function:
- * - Delegates the actual resolution to Node's `dns.lookup`.
+ * - Resolves with c-ares via {@link resolveHost}, not `dns.lookup`, so a
+ *   nameserver that never answers cannot occupy libuv's thread pool.
  * - Always resolves and validates **every** returned IP before connecting.
  * - Returns one address or the whole list, matching the connector's `all` option.
  * - On any unsafe IP, invokes the callback with a {@link GuardedFetchError}
@@ -97,52 +99,62 @@ export function createGuardedLookup(
 
   return function guardedLookup(hostname, opts, callback) {
     const lookupOptions = typeof opts === 'number' ? { family: opts } : opts;
-    dns.lookup(hostname, { ...lookupOptions, all: true }, (err, addresses) => {
-      if (err) {
-        callback(err, '');
-        return;
-      }
-
-      const first = Array.isArray(addresses) ? addresses[0] : undefined;
-      if (!first) {
-        reject(
-          hostname,
-          `Refusing to connect to "${hostname}": DNS returned no addresses.`,
-          HostnameUnsafeSubReason.DNS_RESOLUTION_FAILED,
-          callback,
-        );
-        return;
-      }
-
-      for (const entry of addresses) {
-        if (
-          (entry.family !== 4 && entry.family !== 6) ||
-          net.isIP(entry.address) !== entry.family
-        ) {
+    resolveHost(hostname, { family: toFamily(lookupOptions?.family) }).then(
+      (addresses) => {
+        const first = Array.isArray(addresses) ? addresses[0] : undefined;
+        if (!first) {
           reject(
             hostname,
-            `Refusing to connect to "${hostname}": DNS returned a malformed address.`,
+            `Refusing to connect to "${hostname}": DNS returned no addresses.`,
             HostnameUnsafeSubReason.DNS_RESOLUTION_FAILED,
             callback,
           );
           return;
         }
-        if (!isSafeIpAddress(entry.address)) {
-          reject(
-            hostname,
-            `Refusing to connect to ${entry.address}: private, loopback, or link-local address.`,
-            HostnameUnsafeSubReason.CONNECT_TIME_IP_REJECTED,
-            callback,
-          );
-          return;
-        }
-      }
 
-      if (lookupOptions?.all) {
-        callback(null, addresses);
-      } else {
-        callback(null, first.address, first.family);
-      }
-    });
+        for (const entry of addresses) {
+          if (
+            (entry.family !== 4 && entry.family !== 6) ||
+            net.isIP(entry.address) !== entry.family
+          ) {
+            reject(
+              hostname,
+              `Refusing to connect to "${hostname}": DNS returned a malformed address.`,
+              HostnameUnsafeSubReason.DNS_RESOLUTION_FAILED,
+              callback,
+            );
+            return;
+          }
+          if (!isSafeIpAddress(entry.address)) {
+            reject(
+              hostname,
+              `Refusing to connect to ${entry.address}: private, loopback, or link-local address.`,
+              HostnameUnsafeSubReason.CONNECT_TIME_IP_REJECTED,
+              callback,
+            );
+            return;
+          }
+        }
+
+        if (lookupOptions?.all) {
+          callback(null, addresses);
+        } else {
+          callback(null, first.address, first.family);
+        }
+      },
+      (err: NodeJS.ErrnoException) => {
+        callback(err, '');
+      },
+    );
   };
+}
+
+function toFamily(family: number | string | undefined): number {
+  if (family === 4 || family === 'IPv4') {
+    return 4;
+  }
+  if (family === 6 || family === 'IPv6') {
+    return 6;
+  }
+  return 0;
 }

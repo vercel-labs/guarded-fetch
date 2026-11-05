@@ -321,6 +321,19 @@ implementations must be undici-compatible for it to stay active. Pass
 `dispatcher: null` to opt out (dangerous — only behind a trusted proxy that
 controls the connection target).
 
+### DNS resolution
+
+Both layers resolve hostnames with c-ares (`dns.Resolver`), not `dns.lookup`.
+`dns.lookup` runs getaddrinfo on libuv's thread pool, which cannot cancel it
+and lets DNS use at most half the pool. A URL whose nameserver never answers
+would hold a slot for the OS resolver's full timeout, and two of them are
+enough to queue every other `dns.lookup` in the process behind them. c-ares
+holds no thread while it waits, and each resolution gives up after 5 seconds.
+
+Only DNS is consulted: `/etc/hosts`, nsswitch, and resolv.conf `search`
+domains are not. Nameservers come from the system configuration, or from
+`dns.setServers()` if you call it.
+
 ### Using `createGuardedLookup` on its own
 
 A `dns.lookup` function only runs when the host actually needs resolving.
@@ -482,6 +495,9 @@ preserving `err.code` for your internal logs.
   with user-controlled URLs.
 - **DNS is fail-closed** — resolver errors block as `hostname_unsafe`
   rather than surfacing a retryable network error.
+- **Hostnames resolve through DNS only**: `/etc/hosts` entries, nsswitch
+  sources, and resolv.conf `search` domains are ignored. See
+  [DNS resolution](#dns-resolution).
 - **One unsafe DNS record blocks the whole host**, even alongside public
   records (split-horizon DNS, stray internal records).
 - **CGNAT, `*.local`, and `*.internal` are always unsafe**, which can reject

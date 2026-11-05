@@ -1,4 +1,3 @@
-import dns from 'node:dns';
 import net, { type AddressInfo } from 'node:net';
 import zlib from 'node:zlib';
 
@@ -19,12 +18,17 @@ import {
   GuardedFetchErrorCode,
   isSafeIpAddress,
 } from './index';
+import { resolveHost } from './resolve-host';
 
 // Lets one test reach the local server through the guarded agent. Every other
-// test runs the real check.
+// test runs the real check and the real resolver.
 vi.mock('./ip-address', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./ip-address')>();
   return { ...actual, isSafeIpAddress: vi.fn(actual.isSafeIpAddress) };
+});
+vi.mock('./resolve-host', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./resolve-host')>();
+  return { ...actual, resolveHost: vi.fn(actual.resolveHost) };
 });
 
 /**
@@ -186,18 +190,9 @@ describe('createGuardedFetch blockedEncodings keeps bytes out of the brotli deco
 
   it('never constructs a decoder through the guarded agent', async () => {
     vi.mocked(isSafeIpAddress).mockImplementation((ip) => ip === '127.0.0.1');
-    vi.spyOn(dns, 'lookup').mockImplementation(((
-      _host: string,
-      _options: dns.LookupOptions,
-      callback: (
-        error: NodeJS.ErrnoException | null,
-        addresses: dns.LookupAddress[],
-      ) => void,
-    ) => {
-      queueMicrotask(() =>
-        callback(null, [{ address: '127.0.0.1', family: 4 }]),
-      );
-    }) as typeof dns.lookup);
+    vi.mocked(resolveHost).mockResolvedValueOnce([
+      { address: '127.0.0.1', family: 4 },
+    ]);
     const fetch = createGuardedFetch({ blockedEncodings: ['BR'] });
     const before = { ...brotli };
     const url = baseUrl.replace('127.0.0.1', 'files.example.com');

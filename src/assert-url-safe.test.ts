@@ -1,10 +1,6 @@
 import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 
-vi.mock('node:dns/promises', () => ({
-  lookup: vi.fn(),
-}));
-
-import { lookup } from 'node:dns/promises';
+vi.mock('./resolve-host', () => ({ resolveHost: vi.fn() }));
 
 import { assertUrlIsSafeToFetch, isHostInAllowlist } from './assert-url-safe';
 import {
@@ -12,9 +8,10 @@ import {
   GuardedFetchErrorCode,
   OPAQUE_ERROR_MESSAGE,
 } from './errors';
+import { resolveHost } from './resolve-host';
 import { HostnameUnsafeSubReason, setUrlBlockedHandler } from './url-blocked';
 
-const mockLookup = lookup as unknown as Mock;
+const mockLookup = resolveHost as unknown as Mock;
 const blockedEvents = vi.fn();
 
 beforeEach(() => {
@@ -29,10 +26,7 @@ describe(assertUrlIsSafeToFetch, () => {
     const result = await assertUrlIsSafeToFetch('https://example.com/foo');
     expect(result.hostname).toBe('example.com');
     expect(result.url.toString()).toBe('https://example.com/foo');
-    expect(mockLookup).toHaveBeenCalledWith('example.com', {
-      all: true,
-      verbatim: true,
-    });
+    expect(mockLookup).toHaveBeenCalledWith('example.com');
   });
 
   it('rejects unparseable URLs', async () => {

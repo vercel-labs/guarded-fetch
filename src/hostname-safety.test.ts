@@ -1,14 +1,11 @@
 import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
-vi.mock('node:dns/promises', () => ({
-  lookup: vi.fn(),
-}));
-
-import { lookup } from 'node:dns/promises';
+vi.mock('./resolve-host', () => ({ resolveHost: vi.fn() }));
 
 import { checkHostnameSafetyForServerSideFetch } from './hostname-safety';
+import { resolveHost } from './resolve-host';
 import { HostnameUnsafeSubReason } from './url-blocked';
 
-const mockLookup = lookup as unknown as Mock;
+const mockLookup = resolveHost as unknown as Mock;
 
 beforeEach(() => {
   mockLookup.mockReset();
@@ -125,9 +122,6 @@ describe(checkHostnameSafetyForServerSideFetch, () => {
     await expect(
       checkHostnameSafetyForServerSideFetch('example.com.'),
     ).resolves.toEqual({ safe: true });
-    expect(mockLookup).toHaveBeenCalledWith('example.com.', {
-      all: true,
-      verbatim: true,
-    });
+    expect(mockLookup).toHaveBeenCalledWith('example.com.');
   });
 });
