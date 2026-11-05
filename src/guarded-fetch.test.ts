@@ -104,7 +104,9 @@ describe(guardedFetch, () => {
     const fetch = mockFetch().mockResolvedValueOnce(
       new Response(null, {
         status: 302,
-        headers: { location: 'https://metadata.internal/latest/meta-data/' },
+        headers: {
+          location: 'https://metadata.attacker.example/latest/meta-data/',
+        },
       }),
     );
 
@@ -117,7 +119,7 @@ describe(guardedFetch, () => {
     expect(blockedEvents).toHaveBeenCalledTimes(2);
     expect(blockedEvents).toHaveBeenNthCalledWith(1, {
       reason: GuardedFetchErrorCode.HOSTNAME_UNSAFE,
-      domain: 'metadata.internal',
+      domain: 'metadata.attacker.example',
       subReason: HostnameUnsafeSubReason.DNS_UNSAFE_ADDRESS,
     });
     expect(blockedEvents).toHaveBeenNthCalledWith(2, {

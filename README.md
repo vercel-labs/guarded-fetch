@@ -49,6 +49,65 @@ try {
 }
 ```
 
+## Fetch-compatible SDK transport
+
+Use `createGuardedFetch()` when an SDK accepts a standard `fetch` function and
+owns request headers, redirect validation, and response limits:
+
+```ts
+import { createGuardedFetch } from 'guarded-fetch';
+
+const fetch = createGuardedFetch();
+try {
+  const response = await fetch('https://example.com/file', {
+    redirect: 'manual',
+  });
+  // Consume or cancel the response before closing the transport.
+  console.log(await response.text());
+} finally {
+  await fetch.close();
+}
+```
+
+The factory accepts native `Request`, `FormData`, and normal fetch options,
+preserves authentication headers and streaming bodies, and uses its own undici
+fetch and connection pools independently of global fetch wrappers. Caller
+aborts remain active while reading the response. Inline `data:` URLs are served
+without DNS or a network connection.
+
+Unlike `guardedFetch`, it leaves request policy to the caller:
+
+| Behavior                        | `guardedFetch`                                                 | `createGuardedFetch()`                                         |
+| ------------------------------- | -------------------------------------------------------------- | -------------------------------------------------------------- |
+| URL, IP-literal, and DNS checks | Yes (preflight + connect-time pin)                             | Yes (connect-time pin only)                                    |
+| Redirects                       | `redirect` option; `'follow'` (default) re-validates every hop | Not followed — `'manual'` or `'error'`                         |
+| Header sanitization             | Yes                                                            | No                                                             |
+| Timeout                         | `timeoutMs` (10 s default)                                     | None — pass a `signal`                                         |
+| Response size limit             | With the JSON/text wrappers                                    | None                                                           |
+| `opaqueErrors` / `onUrlBlocked` | Yes                                                            | No (module-level `setUrlBlockedHandler` only)                  |
+| `blockedEncodings`              | Yes                                                            | Yes (trusted origins too)                                      |
+| Error on a connect-time block   | `GuardedFetchError`                                            | `TypeError: fetch failed`, `GuardedFetchError` on `.cause`     |
+| Error on a refused redirect     | `GuardedFetchError` `redirect_not_allowed`                     | `TypeError: fetch failed`, plain `Error` on `.cause` (no code) |
+
+The default `redirect: 'follow'` is treated as `'error'`. With
+`redirect: 'manual'` the 3xx response is returned, and the caller must validate
+each subsequent hop and strip credentials across origins — which is what the AI
+SDK's redirect helpers do. For automatic redirect and header policies, use
+`guardedFetch` instead.
+
+For developer-controlled private services, configure exact origins:
+
+```ts
+const fetch = createGuardedFetch({
+  trustedOrigins: ['https://models.internal:8443'],
+});
+```
+
+Only those exact scheme/hostname/port combinations bypass IP/DNS checks. Paths
+are ignored; every path on that origin is trusted. Never derive this setting
+from users, model output, provider responses, or redirect targets. Reuse the
+transport and call its idempotent `close()` after consuming all responses.
+
 ## What's on by default
 
 `guarded-fetch` has a high security bar by default. `guardedFetch(url)` call with no additional options prevents:
@@ -57,10 +116,10 @@ try {
 | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Protocol allowlist      | Only `http:` and `https:` URLs are accepted.                                                                                                                                     |
 | SSRF DNS check          | The hostname is DNS-resolved before connecting; private, loopback, link-local, CGNAT, and cloud-metadata addresses are rejected. `localhost` and `*.local` are rejected by name. |
-| Connect-time IP pinning | The resolved IP is re-validated _inside_ the socket connect, so a DNS server can't swap in a private IP between the check and the connection (DNS rebinding).                    |
+| Connect-time IP pinning | Every resolved IP is re-validated _inside_ the socket connect, so a DNS server can't swap in a private IP between the check and the connection (DNS rebinding).                  |
 | Header sanitization     | `Host`, `Cookie`, `X-Forwarded-*`, cloud-metadata headers, and other dangerous headers are silently stripped from your request.                                                  |
 | Safe redirects          | Redirects are followed manually (max 5 hops) and every hop re-runs all of the checks above.                                                                                      |
-| Credential stripping    | `Authorization` and `Cookie` are dropped when a redirect crosses origins, so tokens never leak to a different host.                                                              |
+| Credential stripping    | Only `Accept*`, `Content-Type/Language/Encoding`, and `User-Agent` survive a redirect that crosses origins; custom API-key headers are dropped.                                  |
 | Timeout attacks         | The whole request chain (including redirects) is capped at 10 seconds.                                                                                                           |
 
 Two things that always need configuration:
@@ -126,11 +185,16 @@ you can mitigate this attack by blocking `br` encoding:
 
 ```ts
 await guardedFetch(url, { blockedEncodings: ['br'] });
+
+// The SDK transport takes the same option:
+const fetch = createGuardedFetch({ blockedEncodings: ['br'] });
 ```
 
 The request sends `Accept-Encoding: gzip, deflate`. A server that still
 responds with `Content-Encoding: br` is aborted before any byte reaches the
-decoder, and the call throws `response_encoding_not_allowed`.
+decoder, and the call throws `response_encoding_not_allowed`. With
+`createGuardedFetch`, the call rejects with `TypeError: fetch failed` and that
+`GuardedFetchError` on `.cause`.
 
 _Note that using custom fetcher will not work with this_
 
@@ -148,34 +212,37 @@ const data = await readBodyAsJson(response, {
 ## Options reference
 
 All options are optional, and standard `RequestInit` fields (`method`,
-`headers`, `body`, ...) pass through as usual — except `redirect`, which is
-managed internally. `maxResponseBytes` and
+`headers`, `body`, ...) pass through as usual; `redirect` and `signal` are
+honored but enforced by the guard (see their rows below). `maxResponseBytes` and
 `throwOnHttpError` exist only on the `guardedFetchJson` / `guardedFetchText`
 wrappers.
 
-| Option                         | Type                 | Default                | What it does                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| ------------------------------ | -------------------- | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `timeoutMs`                    | `number`             | `10_000`               | Deadline in ms for the entire chain: connection, redirects, and (in the JSON/text wrappers) the body read. Bare `guardedFetch` stops the clock once headers arrive.                                                                                                                                                                                                                                                                                        |
-| `followRedirects`              | `boolean`            | `true`                 | Follow redirects, re-validating every hop. When `false`, the 3xx response is returned as-is.                                                                                                                                                                                                                                                                                                                                                               |
-| `maxRedirects`                 | `number`             | `5`                    | Redirect hop cap. Exceeding it throws `too_many_redirects`.                                                                                                                                                                                                                                                                                                                                                                                                |
-| `httpsOnly`                    | `boolean`            | `false`                | Restrict to `https:` URLs (`http:` and `https:` are otherwise both allowed).                                                                                                                                                                                                                                                                                                                                                                               |
-| `allowedHosts`                 | `string[]`           | _(none)_               | Hostname allowlist — explicit exact match only (`api.example.com` matches only `api.example.com`). Leading wildcards: `*.example.com` allows one subdomain level (`api.example.com`); `**.example.com` allows any depth (`a.b.example.com` too). Neither matches the base domain itself. Not public-suffix-aware — scope wildcards to domains you own (`**.com` would allow every `.com` host). Omit to allow any public host. **Empty array = deny all.** |
-| `skipSsrfCheckForAllowedHosts` | `boolean`            | `false`                | Skip the DNS/SSRF check for hosts that matched `allowedHosts`. Only safe for hosts you fully control.                                                                                                                                                                                                                                                                                                                                                      |
-| `sanitizeHeaders`              | `boolean`            | `true`                 | Strip [dangerous request headers](#headers-that-are-stripped) before sending. Set `false` to send headers verbatim (dangerous with user input).                                                                                                                                                                                                                                                                                                            |
-| `allowedCookie`                | `string`             | _(none)_               | Explicitly send a `Cookie` header (which sanitization otherwise strips). Dropped on cross-origin redirects, like `Authorization`.                                                                                                                                                                                                                                                                                                                          |
-| `blockedEncodings`             | `string[]`           | `[]`                   | Response content codings to reject, e.g. `['br']` on Node without the fix for CVE-2026-111497. `Accept-Encoding` omits them (unless you set it) and a response that uses one throws `response_encoding_not_allowed` before any byte is decoded.                                                                                                                                                                                                            |
-| `opaqueErrors`                 | `boolean`            | `false`                | Replace every error message with one generic string so failures are indistinguishable to attackers. Error `code` is preserved.                                                                                                                                                                                                                                                                                                                             |
-| `onUrlBlocked`                 | `function`           | _(none)_               | Per-call block-event handler; overrides the module-level `setUrlBlockedHandler` for this call.                                                                                                                                                                                                                                                                                                                                                             |
-| `signal`                       | `AbortSignal`        | _(none)_               | External abort signal, combined with the internal timeout. Unlike `timeoutMs`, it keeps cancelling the returned body after the headers arrive. An abort rejects with the signal's reason before the request is sent, and with `network_error` once it is in flight.                                                                                                                                                                                        |
-| `fetch`                        | `fetch` impl         | `undici.fetch`         | Injectable fetch for tests. Must be undici-compatible.                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `dispatcher`                   | `Dispatcher \| null` | shared safe dispatcher | undici dispatcher for the request. `null` disables connect-time IP pinning — dangerous; only for when a trusted proxy already controls the connection target.                                                                                                                                                                                                                                                                                              |
-| `maxResponseBytes`             | `number`             | `10 * 1024 * 1024`     | _(wrappers only)_ Max body size; exceeding it throws `response_too_large`.                                                                                                                                                                                                                                                                                                                                                                                 |
-| `throwOnHttpError`             | `boolean`            | `false`                | _(wrappers only)_ Throw on non-2xx responses instead of returning the body.                                                                                                                                                                                                                                                                                                                                                                                |
+| Option                         | Type                              | Default                | What it does                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| ------------------------------ | --------------------------------- | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `timeoutMs`                    | `number`                          | `10_000`               | Deadline in ms for the entire chain: connection, redirects, and (in the JSON/text wrappers) the body read. Bare `guardedFetch` stops the clock once headers arrive.                                                                                                                                                                                                                                                                                        |
+| `followRedirects`              | `boolean`                         | `true`                 | Follow redirects, re-validating every hop. When `false`, the 3xx response is returned as-is. Ignored when `redirect` is set.                                                                                                                                                                                                                                                                                                                               |
+| `redirect`                     | `'follow' \| 'manual' \| 'error'` | `'follow'`             | Standard fetch redirect policy. `'follow'` re-validates every hop, `'manual'` returns the 3xx response, `'error'` throws `redirect_not_allowed`. Overrides `followRedirects`.                                                                                                                                                                                                                                                                              |
+| `maxRedirects`                 | `number`                          | `5`                    | Redirect hop cap when following redirects. Exceeding it throws `too_many_redirects`.                                                                                                                                                                                                                                                                                                                                                                       |
+| `httpsOnly`                    | `boolean`                         | `false`                | Restrict to `https:` URLs (`http:` and `https:` are otherwise both allowed).                                                                                                                                                                                                                                                                                                                                                                               |
+| `allowedHosts`                 | `string[]`                        | _(none)_               | Hostname allowlist — explicit exact match only (`api.example.com` matches only `api.example.com`). Leading wildcards: `*.example.com` allows one subdomain level (`api.example.com`); `**.example.com` allows any depth (`a.b.example.com` too). Neither matches the base domain itself. Not public-suffix-aware — scope wildcards to domains you own (`**.com` would allow every `.com` host). Omit to allow any public host. **Empty array = deny all.** |
+| `skipSsrfCheckForAllowedHosts` | `boolean`                         | `false`                | Skip the DNS/SSRF check for hosts that matched `allowedHosts`. Only safe for hosts you fully control.                                                                                                                                                                                                                                                                                                                                                      |
+| `sanitizeHeaders`              | `boolean`                         | `true`                 | Strip [dangerous request headers](#headers-that-are-stripped) before sending. Set `false` to send headers verbatim (dangerous with user input).                                                                                                                                                                                                                                                                                                            |
+| `allowedCookie`                | `string`                          | _(none)_               | Explicitly send a `Cookie` header (which sanitization otherwise strips). Dropped on cross-origin redirects, like `Authorization`.                                                                                                                                                                                                                                                                                                                          |
+| `blockedEncodings`             | `string[]`                        | `[]`                   | Response content codings to reject, e.g. `['br']` on Node without the fix for CVE-2026-111497. `Accept-Encoding` omits them (unless you set it) and a response that uses one throws `response_encoding_not_allowed` before any byte is decoded.                                                                                                                                                                                                            |
+| `opaqueErrors`                 | `boolean`                         | `false`                | Replace every error message with one generic string so failures are indistinguishable to attackers. Error `code` is preserved.                                                                                                                                                                                                                                                                                                                             |
+| `onUrlBlocked`                 | `function`                        | _(none)_               | Per-call block-event handler; overrides the module-level `setUrlBlockedHandler` for this call.                                                                                                                                                                                                                                                                                                                                                             |
+| `signal`                       | `AbortSignal`                     | _(none)_               | External abort signal, combined with the internal timeout. Unlike `timeoutMs`, it keeps cancelling the returned body after the headers arrive. An abort rejects with the signal's reason before the request is sent, and with `network_error` once it is in flight.                                                                                                                                                                                        |
+| `fetch`                        | `fetch` impl                      | `undici.fetch`         | Injectable fetch for tests. Must be undici-compatible.                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `dispatcher`                   | `Dispatcher \| null`              | shared safe dispatcher | undici dispatcher for the request. `null` disables connect-time IP pinning — dangerous; only for when a trusted proxy already controls the connection target.                                                                                                                                                                                                                                                                                              |
+| `maxResponseBytes`             | `number`                          | `10 * 1024 * 1024`     | _(wrappers only)_ Max body size; exceeding it throws `response_too_large`.                                                                                                                                                                                                                                                                                                                                                                                 |
+| `throwOnHttpError`             | `boolean`                         | `false`                | _(wrappers only)_ Throw on non-2xx responses instead of returning the body.                                                                                                                                                                                                                                                                                                                                                                                |
 
 Always on, not configurable:
 
-- **Credential stripping on cross-origin redirects** — `Authorization` and
-  `Cookie` never follow a redirect to a different origin.
+- **Credential stripping on cross-origin redirects** — only `Accept`,
+  `Accept-Encoding`, `Accept-Language`, `Content-Type`, `Content-Language`,
+  `Content-Encoding`, and `User-Agent` are kept; every other caller header, including custom
+  provider API-key headers, is dropped.
 - **RFC 7231 redirect normalization** — 301/302/303 responses convert the
   method to `GET` and drop the body (307/308 preserve both).
 
@@ -198,7 +265,7 @@ protected against:
 | Origin-IP spoofing (`X-Forwarded-*`, `Forwarded`, `Via`, `X-Real-IP`)                       | Header stripped.                                                            |
 | Virtual-host routing to internal backends via a supplied `Host` header                      | Header stripped.                                                            |
 | Session leakage via `Cookie` to a user-controlled destination                               | Header stripped (opt back in with `allowedCookie`).                         |
-| Auth-token leak on cross-origin redirect                                                    | `Authorization` and `Cookie` dropped when the redirect changes origin.      |
+| Auth-token leak on cross-origin redirect                                                    | Only non-credential headers kept when the redirect changes origin.          |
 | Memory exhaustion from huge responses; slow-loris bodies                                    | `maxResponseBytes` + whole-chain `timeoutMs` (use the JSON/text wrappers).  |
 | Internal-network mapping via distinguishable error messages                                 | `opaqueErrors: true` normalizes every failure message.                      |
 | Brotli decoder RCE on unpatched Node (CVE-2026-111497)                                      | `blockedEncodings: ['br']` aborts `br` responses before decoding.           |
@@ -216,8 +283,8 @@ Requests are refused when the hostname resolves to (or literally is) any of:
   `64:ff9b::/96`), plus these ranges in full: the NAT64 local-use prefix
   `64:ff9b:1::/48`, IPv4-compatible `::/96`, and IPv4-translated
   `::ffff:0:0:0/96`
-- `localhost`, `*.localhost`, and `*.local` — blocked by name, regardless
-  of what DNS says
+- `localhost`, `*.localhost`, `*.local`, and `*.internal` (trailing dots
+  ignored) — blocked by name, regardless of what DNS says
 
 ### Headers that are stripped
 
@@ -292,25 +359,26 @@ net.connect({ host, port, lookup: createGuardedLookup() });
 
 ## API surface
 
-| Export                                       | Purpose                                                                                                                  |
-| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `guardedFetch(url, opts?)`                   | SSRF-safe `fetch` — returns a `Response`.                                                                                |
-| `guardedFetchJson<T>(url, opts?)`            | Fetch + bounded JSON parse.                                                                                              |
-| `guardedFetchText(url, opts?)`               | Fetch + bounded UTF-8 read.                                                                                              |
-| `assertUrlIsSafeToFetch(url, opts?)`         | Pre-flight validator — no HTTP request, but does resolve DNS.                                                            |
-| `sanitizeRequestHeaders(headers)`            | Strip SSRF/proxy/cookie headers → `Headers`.                                                                             |
-| `readBodyAsJson(res, opts?)`                 | Size-bounded JSON reader for an existing `Response`.                                                                     |
-| `readBodyAsText(res, opts?)`                 | Size-bounded text reader for an existing `Response`.                                                                     |
-| `GuardedFetchError`, `GuardedFetchErrorCode` | Structured error type for every failure mode.                                                                            |
-| `isGuardedFetchError(v)`                     | Type guard resilient to duplicate module copies.                                                                         |
-| `isPermanentGuardedFetchError(v)`            | True when the failure cannot succeed on retry.                                                                           |
-| `BLOCKED_REQUEST_HEADERS`                    | The canonical header blocklist.                                                                                          |
-| `createGuardedLookup(opts?)`                 | `dns.lookup`-compatible function that validates and pins resolved IPs inline. Rebinding guard only — see the note below. |
-| `isSafeIpAddress(ip)`                        | Returns `true` for public IPv4/IPv6 addresses.                                                                           |
-| `getSharedGuardedDispatcher()`               | Lazy process-wide undici `Agent` used by default. Connection-pooled.                                                     |
-| `createGuardedDispatcher(opts?)`             | Fresh undici `Agent` with IP pinning. Caller must `.close()`.                                                            |
-| `setUrlBlockedHandler(handler)`              | Register a process-wide block-event handler.                                                                             |
-| `URL_BLOCKED_LOG_MESSAGE`                    | Suggested constant log message for block events.                                                                         |
+| Export                                       | Purpose                                                                                                                                                 |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `guardedFetch(url, opts?)`                   | SSRF-safe `fetch` — returns a `Response`.                                                                                                               |
+| `guardedFetchJson<T>(url, opts?)`            | Fetch + bounded JSON parse.                                                                                                                             |
+| `guardedFetchText(url, opts?)`               | Fetch + bounded UTF-8 read.                                                                                                                             |
+| `createGuardedFetch(opts?)`                  | Fetch-compatible transport for SDKs: connect-time SSRF checks only, no redirects, caller must `.close()`. See [above](#fetch-compatible-sdk-transport). |
+| `assertUrlIsSafeToFetch(url, opts?)`         | Pre-flight validator — no HTTP request, but does resolve DNS.                                                                                           |
+| `sanitizeRequestHeaders(headers)`            | Strip SSRF/proxy/cookie headers → `Headers`.                                                                                                            |
+| `readBodyAsJson(res, opts?)`                 | Size-bounded JSON reader for an existing `Response`.                                                                                                    |
+| `readBodyAsText(res, opts?)`                 | Size-bounded text reader for an existing `Response`.                                                                                                    |
+| `GuardedFetchError`, `GuardedFetchErrorCode` | Structured error type for every failure mode.                                                                                                           |
+| `isGuardedFetchError(v)`                     | Type guard resilient to duplicate module copies.                                                                                                        |
+| `isPermanentGuardedFetchError(v)`            | True when the failure cannot succeed on retry.                                                                                                          |
+| `BLOCKED_REQUEST_HEADERS`                    | The canonical header blocklist.                                                                                                                         |
+| `createGuardedLookup(opts?)`                 | `dns.lookup`-compatible function that validates and pins resolved IPs inline. Rebinding guard only — see the note below.                                |
+| `isSafeIpAddress(ip)`                        | Returns `true` for public IPv4/IPv6 addresses.                                                                                                          |
+| `getSharedGuardedDispatcher()`               | Lazy process-wide undici `Agent` used by default. Connection-pooled.                                                                                    |
+| `createGuardedDispatcher(opts?)`             | Fresh undici `Agent` with IP pinning. Caller must `.close()`.                                                                                           |
+| `setUrlBlockedHandler(handler)`              | Register a process-wide block-event handler.                                                                                                            |
+| `URL_BLOCKED_LOG_MESSAGE`                    | Suggested constant log message for block events.                                                                                                        |
 
 ## Error codes
 
@@ -324,10 +392,11 @@ Every failure throws `GuardedFetchError` with a stable string `code`
 | `host_not_allowed`              | Host not in `allowedHosts`.                                                         | Yes        |
 | `hostname_unsafe`               | Resolved to a private/loopback/link-local address — or DNS failed (fail-closed).    | Usually    |
 | `timeout`                       | Exceeded `timeoutMs`.                                                               | No         |
-| `too_many_redirects`            | Redirect chain exceeded `maxRedirects`.                                             | No         |
-| `redirect_invalid`              | Redirect `Location` missing or malformed.                                           | No         |
-| `redirect_to_unsafe_host`       | A redirect target failed the SSRF/protocol/host checks.                             | No         |
-| `response_too_large`            | Body exceeded `maxResponseBytes`.                                                   | No         |
+| `too_many_redirects`            | Redirect chain exceeded `maxRedirects`.                                             | Yes        |
+| `redirect_not_allowed`          | The caller set `redirect: 'error'` and the server returned a redirect.              | Yes        |
+| `redirect_invalid`              | Redirect `Location` missing or malformed.                                           | Yes        |
+| `redirect_to_unsafe_host`       | A redirect target failed the SSRF/protocol/host checks.                             | Yes        |
+| `response_too_large`            | Body exceeded `maxResponseBytes`.                                                   | Yes        |
 | `response_encoding_not_allowed` | Response used a `Content-Encoding` listed in `blockedEncodings`.                    | Yes        |
 | `network_error`                 | DNS/TLS/connect failure, in-flight `signal` abort, or non-2xx `throwOnHttpError`.   | No         |
 
@@ -431,13 +500,16 @@ preserving `err.code` for your internal logs.
   [DNS resolution](#dns-resolution).
 - **One unsafe DNS record blocks the whole host**, even alongside public
   records (split-horizon DNS, stray internal records).
-- **CGNAT and `*.local` are always unsafe**, which can reject legitimate
-  Tailscale-style or mDNS endpoints.
+- **CGNAT, `*.local`, and `*.internal` are always unsafe**, which can reject
+  legitimate Tailscale-style, mDNS, or private-zone endpoints.
 - **Header stripping is silent** — see
   [the FAQ entry](#why-did-my-request-go-through-but-the-destination-returned-401404).
 - **Credential stripping on cross-origin redirects is not configurable** —
-  auth-preserving redirect patterns (e.g. an API 302 to a presigned URL
-  that also expects the auth header) will lose the header.
+  every header outside a small non-credential allowlist is dropped, so
+  auth-preserving redirect patterns (e.g. an API 302 to a presigned URL that
+  also expects the auth header) and custom headers such as `X-Request-Id`
+  will not reach the new origin. Use `redirect: 'manual'` to follow such hops
+  yourself.
 - **`allowedHosts: []` denies every host** — see
   [the FAQ entry](#why-does-allowedhosts--block-everything).
 - **Redirect chains through link shorteners** can exceed the default 5-hop
