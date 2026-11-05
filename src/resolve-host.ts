@@ -11,6 +11,13 @@ export const DEFAULT_DNS_TIMEOUT_MS = 5_000;
 const ATTEMPT_TIMEOUT_MS = 2_000;
 const ATTEMPTS = 2;
 
+/** Longest a successful answer is reused, whatever its TTL says. */
+const MAX_CACHE_TTL_MS = 30_000;
+/** How long a failed resolution is reused. */
+const NEGATIVE_CACHE_TTL_MS = 2_000;
+/** Oldest entries are evicted beyond this. */
+const MAX_CACHE_ENTRIES = 1_000;
+
 export interface ResolveHostOptions {
   /** `4` or `6` to resolve a single family; `0` (default) resolves both. */
   family?: number;
@@ -41,6 +48,12 @@ export interface ResolveHostOptions {
  * resolve are returned. When neither yields addresses, the most informative
  * error is thrown (a timeout or server failure in preference to "no
  * records"). IP literals are returned as-is without a query.
+ *
+ * Concurrent calls for the same host and family share one query, and its
+ * outcome is reused for the record TTL (capped at 30 seconds) or, for a
+ * failure, for 2 seconds. A caller that times out or aborts stops waiting
+ * without affecting the others. Every caller still validates the addresses
+ * it gets, so a reused answer is checked just like a fresh one.
  */
 export async function resolveHost(
   hostname: string,
@@ -72,10 +85,14 @@ export async function resolveHost(
   });
 
   try {
-    return await Promise.race([
-      query(getResolver(), hostname, family),
+    const outcome = await Promise.race([
+      resolveShared(hostname, family),
       stopped,
     ]);
+    if ('error' in outcome) {
+      throw outcome.error;
+    }
+    return [...outcome.addresses];
   } finally {
     clearTimeout(timer);
     if (onAbort) {
@@ -84,27 +101,105 @@ export async function resolveHost(
   }
 }
 
+type Outcome = { addresses: readonly LookupAddress[] } | { error: unknown };
+
+interface CacheEntry {
+  outcome: Outcome;
+  expiresAt: number;
+}
+
+const cache = new Map<string, CacheEntry>();
+const inflight = new Map<string, Promise<Outcome>>();
+
+/**
+ * Returns the cached outcome for `hostname`, joins a query already in
+ * flight, or starts one. Never rejects: failures are returned as outcomes so
+ * they can be cached and shared like answers.
+ */
+function resolveShared(hostname: string, family: number): Promise<Outcome> {
+  // First, so that a `dns.setServers()` change drops answers from the old
+  // servers before the cache is read.
+  const resolver = getResolver();
+  const key = `${family}/${hostname.toLowerCase()}`;
+
+  const cached = cache.get(key);
+  if (cached) {
+    if (cached.expiresAt > Date.now()) {
+      return Promise.resolve(cached.outcome);
+    }
+    cache.delete(key);
+  }
+
+  const joined = inflight.get(key);
+  if (joined) {
+    return joined;
+  }
+
+  const pending = query(resolver, hostname, family).then(
+    ({ addresses, ttlMs }) => settle({ addresses }, ttlMs),
+    (error: unknown) => settle({ error }, NEGATIVE_CACHE_TTL_MS),
+  );
+  function settle(outcome: Outcome, ttlMs: number): Outcome {
+    if (inflight.get(key) === pending) {
+      inflight.delete(key);
+    }
+    // Answers from servers that `dns.setServers()` has since replaced are
+    // handed to the callers that waited for them, but not reused.
+    if (ttlMs > 0 && resolver === sharedResolver) {
+      cacheOutcome(key, outcome, ttlMs);
+    }
+    return outcome;
+  }
+  inflight.set(key, pending);
+  return pending;
+}
+
+function cacheOutcome(key: string, outcome: Outcome, ttlMs: number): void {
+  cache.delete(key);
+  if (cache.size >= MAX_CACHE_ENTRIES) {
+    const oldest = cache.keys().next();
+    if (!oldest.done) {
+      cache.delete(oldest.value);
+    }
+  }
+  cache.set(key, { outcome, expiresAt: Date.now() + ttlMs });
+}
+
+/** Forgets every cached and in-flight resolution. For tests. */
+export function clearResolveHostCache(): void {
+  cache.clear();
+  inflight.clear();
+}
+
 const NO_RECORDS: ReadonlySet<string> = new Set([dns.NODATA, dns.NOTFOUND]);
 
 async function query(
   resolver: dns.promises.Resolver,
   hostname: string,
   family: number,
-): Promise<LookupAddress[]> {
-  const none = Promise.resolve<string[]>([]);
+): Promise<{ addresses: LookupAddress[]; ttlMs: number }> {
+  const none = Promise.resolve<dns.RecordWithTtl[]>([]);
   const [v4, v6] = await Promise.allSettled([
-    family === 6 ? none : resolver.resolve4(hostname),
-    family === 4 ? none : resolver.resolve6(hostname),
+    family === 6 ? none : resolver.resolve4(hostname, { ttl: true }),
+    family === 4 ? none : resolver.resolve6(hostname, { ttl: true }),
   ]);
 
-  const ipv4 = v4.status === 'fulfilled' ? toAddresses(v4.value, 4) : [];
-  const ipv6 = v6.status === 'fulfilled' ? toAddresses(v6.value, 6) : [];
+  const v4Records = v4.status === 'fulfilled' ? v4.value : [];
+  const v6Records = v6.status === 'fulfilled' ? v6.value : [];
+  const ipv4 = toAddresses(v4Records, 4);
+  const ipv6 = toAddresses(v6Records, 6);
   const addresses =
     dns.getDefaultResultOrder() === 'ipv6first'
       ? [...ipv6, ...ipv4]
       : [...ipv4, ...ipv6];
   if (addresses.length > 0) {
-    return addresses;
+    const ttlSeconds = Math.min(
+      ...[...v4Records, ...v6Records].map((record) => record.ttl),
+    );
+    return {
+      addresses,
+      ttlMs: Math.min(Math.max(ttlSeconds, 0) * 1_000, MAX_CACHE_TTL_MS),
+    };
   }
 
   const failures = [v4, v6].flatMap((result) =>
@@ -119,8 +214,11 @@ async function query(
   );
 }
 
-function toAddresses(records: string[], family: 4 | 6): LookupAddress[] {
-  return records.map((address) => ({ address, family }));
+function toAddresses(
+  records: dns.RecordWithTtl[],
+  family: 4 | 6,
+): LookupAddress[] {
+  return records.map(({ address }) => ({ address, family }));
 }
 
 let sharedResolver: dns.promises.Resolver | undefined;
@@ -143,6 +241,7 @@ function getResolver(): dns.promises.Resolver {
     if (servers.length > 0) {
       resolver.setServers(servers);
     }
+    clearResolveHostCache();
     sharedResolver = resolver;
     sharedResolverServers = key;
   }

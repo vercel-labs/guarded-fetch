@@ -9,6 +9,8 @@ export interface StubRecord {
   ttl?: number;
   /** Never answer, like a nameserver that drops packets. */
   blackhole?: boolean;
+  /** Wait this long before answering. */
+  delayMs?: number;
 }
 
 export interface DnsStubServer {
@@ -49,11 +51,21 @@ export async function startDnsStubServer(): Promise<DnsStubServer> {
     }
     const answers =
       type === TYPE_A || type === TYPE_AAAA ? (record?.[typeName] ?? []) : [];
-    socket.send(
-      buildResponse(packet, end, type, answers, record?.ttl ?? 60, !record),
-      remote.port,
-      remote.address,
+    const response = buildResponse(
+      packet,
+      end,
+      type,
+      answers,
+      record?.ttl ?? 60,
+      !record,
     );
+    setTimeout(() => {
+      try {
+        socket.send(response, remote.port, remote.address);
+      } catch {
+        // Closed while the answer was delayed.
+      }
+    }, record?.delayMs ?? 0);
   });
 
   await new Promise<void>((resolve) => {
